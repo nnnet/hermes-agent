@@ -1,0 +1,25 @@
+hermes_cli/config.py
+  s_e5369d415d379b::t_3b5fe093499eff 1000-1006,1011,1017-1019,1023-1025,1029,1034
+tools/tts_tool.py
+  s_e5369d415d379b::t_63818edb09bc38 1103-1107
+  s_e5369d415d379b::t_5d3e2c3554d51a 1243-1245
+  s_e5369d415d379b::t_252165f8c4696d 1053-1058
+  s_e5369d415d379b::t_11bb93c98a7952 1156-1169
+  s_e5369d415d379b::t_564207c76a1c8f 1315-1317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "c84ca85ea02860d8222200db51e7d455a2ee3589",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
