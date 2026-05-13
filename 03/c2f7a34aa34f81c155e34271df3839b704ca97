@@ -1,0 +1,22 @@
+agent/transports/codex.py
+  s_e5369d415d379b::t_a034768485a90d 126-132,136-137,151-153
+  s_e5369d415d379b::t_8d49337d3713ca 8,15-31
+agent/auxiliary_client.py
+  s_e5369d415d379b::t_476b3b46d26090 686-698
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "03c2f7a34aa34f81c155e34271df3839b704ca97",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
