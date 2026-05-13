@@ -1,0 +1,21 @@
+tools/transcription_tools.py
+  s_e5369d415d379b::t_cb5b81c5e73b9d 77-99
+  s_e5369d415d379b::t_4c92d5cce6f038 242-248
+  s_e5369d415d379b::t_3a378aea8592dd 311-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "0299bb26eebedd21928db9f586207119a6ec46c5",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
