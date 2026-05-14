@@ -1,0 +1,23 @@
+gateway/run.py
+  s_e5369d415d379b::t_54997cdb9a05ed 1523-1553
+  s_e5369d415d379b::t_64ce6f3c0286ce 9839,9863
+  s_e5369d415d379b::t_e2e9c5bb1e81dc 10092-10095
+.env.example
+  s_e5369d415d379b::t_25106030161dc4 17-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "4f4a1f1b54b5a9d884a73e9d25807bfbe5387b44",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
