@@ -184,6 +184,59 @@ export const roseTheme: DashboardTheme = {
 };
 
 /**
+ * Mission Control — dark cyan-on-void inspired by the Mission Control
+ * project (github.com/builderz-labs/mission-control). Borrows its palette
+ * verbatim where Hermes's 3-layer model maps cleanly:
+ *   - background = MC's ``--background`` (215 27% 4%)
+ *   - midground  = MC's ``--void-cyan`` / ``--primary`` (187 82% 53%)
+ *   - card-ish stops are derived by the DS cascade in src/index.css from
+ *     those two, so we don't need to pin every shadcn token here.
+ * Inter + JetBrains Mono mirror MC's Next.js default stack; the radius
+ * matches MC's ``--radius: 0.5rem`` baseline.
+ */
+export const missionControlTheme: DashboardTheme = {
+  name: "mission-control",
+  label: "Mission Control",
+  description: "Cyan-on-void — borrowed from the Mission Control dashboard",
+  palette: {
+    background: { hex: "#080a0e", alpha: 1 },
+    midground: { hex: "#22d3ee", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(34, 211, 238, 0.28)",
+    noiseOpacity: 0.4,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "14px",
+    lineHeight: "1.5",
+    letterSpacing: "-0.005em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.5rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    // Match MC's exact cyan for ring/primary/accent so highlight rings
+    // around inputs and focused buttons look identical to MC. The DS
+    // cascade derives these from `midground` by default, but pinning
+    // here removes a degree of drift from color-mix() rounding.
+    ring: "#22d3ee",
+    primary: "#22d3ee",
+    accent: "#22d3ee",
+    // MC uses a slightly cooler card stop than what the cascade would
+    // pick — match exactly so cards don't look washed-out next to MC.
+    card: "#0f121a",
+    border: "#1c2333",
+    destructive: "#ff5577",
+  },
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -212,4 +265,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "mission-control": missionControlTheme,
 };
