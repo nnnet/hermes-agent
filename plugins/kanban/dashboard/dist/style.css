@@ -1490,3 +1490,130 @@
   font-size: 0.7rem;
   cursor: pointer;
 }
+
+/* ---- Card trash button + delete-confirm dialog ----------------------- */
+
+/* Pinned to the far-right of the first card row via margin-left: auto.
+ * Subtle by default (opacity:0 except on focus), opacity:1 only when the
+ * card is hovered — keeps the column dense and avoids drawing the eye
+ * away from the title. Red is reserved for the hover/focus state so the
+ * destructive action is visually obvious only when the user is committing
+ * to the click. */
+.hermes-kanban-trash-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease-out, color 0.12s, background 0.12s, transform 0.12s;
+}
+.hermes-kanban-trash-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--color-ring, currentColor);
+  outline-offset: 1px;
+}
+.hermes-kanban-card:hover .hermes-kanban-trash-btn,
+.hermes-kanban-card:focus-within .hermes-kanban-trash-btn {
+  opacity: 0.65;
+}
+.hermes-kanban-trash-btn:hover,
+.hermes-kanban-card .hermes-kanban-trash-btn:hover,
+.hermes-kanban-card:focus-within .hermes-kanban-trash-btn:hover {
+  opacity: 1;
+  color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 14%, transparent);
+  transform: scale(1.05);
+}
+
+/* Modal shade — fixed full-viewport overlay above everything, including
+ * the kanban drawer (z-index 50) and the task drawer shade. */
+.hermes-kanban-confirm-shade {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, black 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.hermes-kanban-confirm-dialog {
+  max-width: 28rem;
+  width: calc(100% - 2rem);
+  background: var(--color-card, #fff);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.5rem);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+  padding: 1.1rem 1.2rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.hermes-kanban-confirm-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-confirm-target {
+  padding: 0.35rem 0.6rem;
+  background: color-mix(in srgb, var(--color-card-subtle, var(--color-card)) 100%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: calc(var(--radius, 0.5rem) - 0.2rem);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.78rem;
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.hermes-kanban-confirm-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  user-select: none;
+}
+.hermes-kanban-confirm-skip input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.hermes-kanban-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+/* The destructive "Delete" button uses the same shadcn Button base as
+ * the rest of the plugin; this class just paints the destructive tint
+ * on top so we don't have to rely on a SDK variant that may not exist
+ * across host versions. */
+.hermes-kanban-confirm-delete-btn {
+  background: var(--color-destructive, #d14a4a) !important;
+  color: white !important;
+  border-color: var(--color-destructive, #d14a4a) !important;
+}
+.hermes-kanban-confirm-delete-btn:hover {
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 88%, black) !important;
+}
