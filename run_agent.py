@@ -4320,6 +4320,7 @@ class AIAgent:
             except Exception:
                 pass
             review_agent = None
+            review_messages = []
             try:
                 with open(os.devnull, "w", encoding="utf-8") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
@@ -4437,6 +4438,7 @@ class AIAgent:
                         review_agent.close()
                     except Exception:
                         pass
+                    review_messages = list(getattr(review_agent, "_session_messages", []))
                     review_agent = None
 
                 # Scan the review agent's messages for successful tool actions
@@ -4446,7 +4448,7 @@ class AIAgent:
                 # re-surface stale "created"/"updated" messages from the prior
                 # conversation as if they just happened (issue #14944).
                 actions = self._summarize_background_review_actions(
-                    getattr(review_agent, "_session_messages", []),
+                    review_messages,
                     messages_snapshot,
                 )
 
