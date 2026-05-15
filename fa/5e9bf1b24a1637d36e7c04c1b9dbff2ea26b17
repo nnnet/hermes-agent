@@ -1,0 +1,41 @@
+plugins/aegis_attestation/README.md
+  s_e5369d415d379b::t_23f9aea693e68b 93-101
+  s_e5369d415d379b::t_08bbb4d6f58bf8 148-154
+plugins/aegis_attestation/plugin.yaml
+  ai_agent 1-7
+plugins/aegis_attestation/__init__.py
+  s_e5369d415d379b::t_94ef8a26a3ca3c 179
+  s_e5369d415d379b::t_6574d22166151e 15-16
+  s_e5369d415d379b::t_e1dd6cb14f0ac1 35-113
+plugins/aegis_attestation/attestation.py
+  ai_agent 1-656
+plugins/aegis_attestation/__main__.py
+  ai_agent 1-16
+plugins/aegis_attestation/SOUL.md
+  s_e5369d415d379b::t_10f0bed1bad931 61-74
+  s_e5369d415d379b::t_13334023d05075 88
+  s_e5369d415d379b::t_669b988f1e08da 106-107
+plugins/aegis_attestation/tests/test_attestation.py
+  s_e5369d415d379b::t_0e88cb5fe19cbc 422-560,566
+  s_e5369d415d379b::t_7587f7bc9327ce 35-50
+  s_e5369d415d379b::t_caa30bdfa89d27 561-565,567-568
+  s_e5369d415d379b::t_93598ef318bca6 12-15
+plugins/aegis_attestation/manifest.json
+  ai_agent 1-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "fa5e9bf1b24a1637d36e7c04c1b9dbff2ea26b17",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
