@@ -184,31 +184,55 @@ export const roseTheme: DashboardTheme = {
 };
 
 /**
- * Mission Control — dark cyan-on-void inspired by the Mission Control
- * project (github.com/builderz-labs/mission-control). Borrows its palette
- * verbatim where Hermes's 3-layer model maps cleanly:
- *   - background = MC's ``--background`` (215 27% 4%)
- *   - midground  = MC's ``--void-cyan`` / ``--primary`` (187 82% 53%)
- *   - card-ish stops are derived by the DS cascade in src/index.css from
- *     those two, so we don't need to pin every shadcn token here.
- * Inter + JetBrains Mono mirror MC's Next.js default stack; the radius
- * matches MC's ``--radius: 0.5rem`` baseline.
+ * Mission Control — flat dark dashboard styled to match the Mission
+ * Control project (github.com/builderz-labs/mission-control) as closely
+ * as Hermes's theme system allows.
+ *
+ * Compared with the other Hermes presets this one is *aggressively
+ * de-Hermes-ified*:
+ *
+ *   - midground is a near-white (#e6ebf0), not the accent — Hermes's
+ *     DS cascade derives `--color-foreground` from midground, so body
+ *     text needs to be readable greyscale. The cyan accent is bolted
+ *     on via `colorOverrides` (primary/ring/accent/secondary).
+ *   - All decorative chrome that ships in the default Hermes look is
+ *     killed via `componentStyles` overrides: the diagonal clip-path
+ *     borders on the sidebar/header/cards/tabs, the warm-glow vignette
+ *     (set warmGlow: "transparent"), the SVG noise overlay
+ *     (noiseOpacity: 0), and the filler-bg jpeg in `<Backdrop>` (set
+ *     --component-backdrop-filler-opacity: 0).
+ *   - `customCSS` retargets `--font-mondwest` from the bundled
+ *     decorative display face to plain Inter, so sidebar nav items and
+ *     section labels drop the retro-display vibe.
+ *
+ * Palette borrowed verbatim from MC's globals.css `.dark` block.
  */
 export const missionControlTheme: DashboardTheme = {
   name: "mission-control",
   label: "Mission Control",
-  description: "Cyan-on-void — borrowed from the Mission Control dashboard",
+  description: "Flat dark — copies the Mission Control look (no glow, no grain, no chrome)",
   palette: {
-    background: { hex: "#080a0e", alpha: 1 },
-    midground: { hex: "#22d3ee", alpha: 1 },
+    // MC --background (215 27% 4%)
+    background: { hex: "#080b10", alpha: 1 },
+    // MC's body text colour (--foreground, 210 20% 92%). Hermes drives
+    // `--color-foreground` off `--midground`, so this MUST be a readable
+    // greyscale — not the accent — or every label turns cyan.
+    midground: { hex: "#e6ebf0", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(34, 211, 238, 0.28)",
-    noiseOpacity: 0.4,
+    // No warm vignette. Backdrop still renders the z-99 div but a
+    // transparent gradient means there's nothing to see.
+    warmGlow: "transparent",
+    // Backdrop's SVG noise layer reads this multiplier; 0 disables.
+    noiseOpacity: 0,
   },
   typography: {
     ...DEFAULT_TYPOGRAPHY,
+    // MC's Next.js stack defaults to Inter; JetBrains Mono is its
+    // canonical mono face. Both pulled from Google Fonts on demand —
+    // fontUrl is injected as a <link> by ThemeProvider.
     fontSans: `"Inter", ${SYSTEM_SANS}`,
     fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Inter", ${SYSTEM_SANS}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
     baseSize: "14px",
@@ -220,19 +244,79 @@ export const missionControlTheme: DashboardTheme = {
     radius: "0.5rem",
     density: "comfortable",
   },
+  // Kill every Hermes-DS decorative override. `clip-path: none` /
+  // `border-image: none` resolve cleanly through the inline styles on
+  // App.tsx's sidebar/header and Card. Background overrides pin flat
+  // shades so we don't inherit teal-tinted cascade defaults.
+  componentStyles: {
+    sidebar: {
+      background: "#0a0d12",
+      clipPath: "none",
+      borderImage: "none",
+    },
+    header: {
+      background: "#0a0d12",
+      clipPath: "none",
+      borderImage: "none",
+    },
+    card: {
+      background: "#10141c",
+      clipPath: "none",
+      borderImage: "none",
+      boxShadow: "none",
+    },
+    tab: {
+      clipPath: "none",
+    },
+    backdrop: {
+      // Hide the filler jpeg by zeroing its z-2 div opacity. Combined
+      // with warmGlow: "transparent" and noiseOpacity: 0, the canvas
+      // reduces to a single flat `--background-base` fill underneath.
+      fillerOpacity: "0",
+    },
+  },
+  // Mondwest is the retro display face Hermes uses for nav/section labels.
+  // Retarget the CSS var to Inter so MC theme reads as one consistent face.
+  // Also force the active-state nav indicator (a 1px column) into the
+  // shadcn ring color so it picks up the cyan accent instead of the
+  // greyscale midground.
+  customCSS: `
+    :root {
+      --font-mondwest: "Inter", system-ui, sans-serif;
+    }
+    /* The default theme uses mix-blend-mode: plus-lighter on the brand
+       title; against a flat dark fill that washes the cyan glow away —
+       remove it so the heading reads as plain greyscale Inter. */
+    aside [style*="mix-blend-mode"] {
+      mix-blend-mode: normal !important;
+    }
+  `,
   colorOverrides: {
-    // Match MC's exact cyan for ring/primary/accent so highlight rings
-    // around inputs and focused buttons look identical to MC. The DS
-    // cascade derives these from `midground` by default, but pinning
-    // here removes a degree of drift from color-mix() rounding.
+    // The cyan accent — every focus ring, primary button, active tab
+    // indicator. Matches MC's --void-cyan (187 82% 53%).
     ring: "#22d3ee",
     primary: "#22d3ee",
-    accent: "#22d3ee",
-    // MC uses a slightly cooler card stop than what the cascade would
-    // pick — match exactly so cards don't look washed-out next to MC.
-    card: "#0f121a",
-    border: "#1c2333",
-    destructive: "#ff5577",
+    primaryForeground: "#04141a",
+    accent: "#1e3a44",
+    accentForeground: "#22d3ee",
+    secondary: "#162028",
+    secondaryForeground: "#e6ebf0",
+    // Card / surface tones — pinned because the cascade would derive
+    // them as a 4% midground mix, which against a flat-dark background
+    // gives a barely-visible separation. MC's --card (220 30% 8%) is
+    // explicitly cooler than the surrounding background.
+    card: "#10141c",
+    cardForeground: "#e6ebf0",
+    popover: "#10141c",
+    popoverForeground: "#e6ebf0",
+    muted: "#161b25",
+    mutedForeground: "#94a3b8",
+    border: "#1c2230",
+    input: "#1c2230",
+    destructive: "#ef4444",
+    destructiveForeground: "#ffffff",
+    success: "#22c55e",
+    warning: "#f59e0b",
   },
 };
 
