@@ -14,8 +14,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
     rm -rf /var/lib/apt/lists/*
+
+# yt-dlp baseline install. Runtime updates land in user-area via wrapper
+# (/opt/hermes-scripts/yt-dlp-fresh.sh) using PYTHONUSERBASE=/opt/data/.python-user
+# so the wrapper can `pip install --user --upgrade yt-dlp` without root.
+RUN pip install --no-cache-dir --break-system-packages yt-dlp
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
