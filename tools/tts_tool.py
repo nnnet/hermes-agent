@@ -2238,6 +2238,7 @@ _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_INLINE_CODE_BLOCK = re.compile(r'`[^`\n]*`')        # inline `code` → drop entirely
+_MD_IMG = re.compile(r'!\[([^\]]*)\]\([^)]+\)')         # ![alt](url) → drop entirely
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
 _MD_URL = re.compile(r'https?://\S+')
 _MD_BOLD = re.compile(r'\*\*(.+?)\*\*')
@@ -2291,6 +2292,9 @@ def _strip_markdown_for_tts(text: str) -> str:
     # contain identifiers that TTS would mangle ("foo_bar_baz" → "фу бар баз").
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_INLINE_CODE_BLOCK.sub(' ', text)
+    # Images first — drop entirely; alt-text is descriptive metadata, not prose.
+    # Must run before _MD_LINK or the leading `!` leaks through.
+    text = _MD_IMG.sub('', text)
     # Links / URLs — keep link text, drop href; raw URLs dropped entirely.
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
