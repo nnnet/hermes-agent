@@ -14,8 +14,18 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini \
+    lsof && \
     rm -rf /var/lib/apt/lists/*
+# lsof needed by @browsermcp/mcp at startup (it shells out to
+# `lsof -ti:9009 | xargs kill -9` to free the port before binding its
+# WebSocket server). Without lsof the npx process crashes on launch:
+#   /bin/sh: 1: lsof: not found
+#   Failed to kill process on port 9009
+#   tools.mcp_tool: Failed to connect to MCP server 'browsermcp': CancelledError
+# Symptom is silent in main container (only "(1 failed)" in MCP registration
+# line); per-profile sub-agents accumulate noise but still run. Adding lsof
+# is the minimal fix — package is tiny (~700KB).
 
 # yt-dlp baseline install. Runtime updates land in user-area via wrapper
 # (/opt/hermes-scripts/yt-dlp-fresh.sh) using PYTHONUSERBASE=/opt/data/.python-user
