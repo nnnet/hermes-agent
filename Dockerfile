@@ -81,7 +81,15 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all
+# `--extra hindsight` bundles `hindsight-client` (pinned in [hindsight] extra
+# of pyproject.toml) into the image venv. Without it, the memory.hindsight
+# plugin lazy-installs at first use — but the lazy path only triggers in
+# `local_embedded` mode (plugins/memory/hindsight/__init__.py guard); for
+# `local_external` mode (Hermes talking to an external Hindsight HTTP server)
+# the import fires unconditionally → ModuleNotFoundError → retain silently
+# fails and the bank stays empty. Baking the dep in makes both modes work
+# out-of-the-box and removes the per-container-restart lazy-install churn.
+RUN uv sync --frozen --no-install-project --extra all --extra hindsight
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
