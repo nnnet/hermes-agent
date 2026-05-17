@@ -1640,7 +1640,7 @@
             "Show archived boards and tasks (restore from here)"),
         }, props.showArchive
           ? tx(t, "hideArchive", "Hide archive")
-          : tx(t, "showArchive", "Archive")),
+          : tx(t, "showArchive", "Archives")),
       ),
     );
   }
@@ -2624,13 +2624,26 @@
                             title: `${t.link_counts.parents} parent${t.link_counts.parents === 1 ? "" : "s"}, ${t.link_counts.children} child${t.link_counts.children === 1 ? "" : "ren"}. Children stay blocked until their parent is done.` },
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
-            h("span", { className: "hermes-kanban-ago",
-                        title: t.entered_status_at && t.entered_status_at !== t.created_at
-                          ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
-                          : (t.created_at ? `Created ${t.created_at}` : "") },
-              t.entered_status_at && t.entered_status_at !== t.created_at && timeAgo
-                ? `${timeAgo(t.created_at)} / ${timeAgo(t.entered_status_at)}`
-                : (timeAgo ? timeAgo(t.created_at) : "")),
+            (function () {
+              // "created / in-stage" age. Show single value when both
+              // timeAgo strings collapse to the same coarse bucket
+              // (e.g. "1h ago / 1h ago") — the duplicate carries no
+              // information and the user reads it as a single value
+              // anyway. The tooltip always retains both raw timestamps
+              // so power users can still inspect the precise per-stage
+              // entry time when buckets coincide.
+              const createdAgo = timeAgo ? timeAgo(t.created_at) : "";
+              const enteredAgo = (timeAgo && t.entered_status_at && t.entered_status_at !== t.created_at)
+                ? timeAgo(t.entered_status_at)
+                : null;
+              const text = (enteredAgo && enteredAgo !== createdAgo)
+                ? `${createdAgo} / ${enteredAgo}`
+                : createdAgo;
+              const title = t.entered_status_at && t.entered_status_at !== t.created_at
+                ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
+                : (t.created_at ? `Created ${t.created_at}` : "");
+              return h("span", { className: "hermes-kanban-ago", title }, text);
+            })(),
           ),
         ),
       ),
