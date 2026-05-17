@@ -1,0 +1,92 @@
+# Daily watchdog over prod-rebase.yml.
+#
+# If prod has been failing to rebase for >12h (= 12 hourly cycles all
+# either skipped, failed, or conflicted), alert via Telegram so we can
+# intervene before the divergence becomes painful to reconcile.
+#
+# Threshold rationale: hourly cadence + ≥12 consecutive non-success runs
+# means at least 12h of upstream changes haven't been absorbed AND the
+# automation can't recover by itself.
+
+name: Prod rebase monitor
+
+on:
+  schedule:
+    - cron: "0 9 * * *"     # daily at 09:00 UTC = 12:00 MSK
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    name: Check prod-rebase health
+    runs-on: ubuntu-latest
+    if: github.repository != 'NousResearch/hermes-agent'
+    steps:
+      - name: Pull recent prod-rebase runs
+        id: runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch last 12 runs (≈12h at hourly cadence)
+          gh -R ${{ github.repository }} run list \
+            --workflow=prod-rebase.yml \
+            --limit=12 \
+            --json conclusion,startedAt \
+            > /tmp/runs.json
+
+          # Count outcomes
+          TOTAL=$(jq 'length' /tmp/runs.json)
+          SUCCESS=$(jq '[.[] | select(.conclusion=="success")] | length' /tmp/runs.json)
+          FAILURE=$(jq '[.[] | select(.conclusion=="failure")] | length' /tmp/runs.json)
+          CANCELLED=$(jq '[.[] | select(.conclusion=="cancelled")] | length' /tmp/runs.json)
+          OLDEST=$(jq -r '.[-1].startedAt // "none"' /tmp/runs.json)
+
+          echo "total=$TOTAL"       >> "$GITHUB_OUTPUT"
+          echo "success=$SUCCESS"   >> "$GITHUB_OUTPUT"
+          echo "failure=$FAILURE"   >> "$GITHUB_OUTPUT"
+          echo "cancelled=$CANCELLED" >> "$GITHUB_OUTPUT"
+          echo "oldest=$OLDEST"     >> "$GITHUB_OUTPUT"
+
+      - name: Compare prod vs main (commits behind)
+        id: divergence
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/${{ github.repository }}.git repo
+          cd repo
+          git fetch origin main:main prod:prod
+          BEHIND=$(git rev-list --count prod..main)
+          AHEAD=$(git rev-list --count main..prod)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "ahead=$AHEAD"   >> "$GITHUB_OUTPUT"
+
+      - name: Alert if rebase stalled
+        if: steps.runs.outputs.success == '0' || steps.divergence.outputs.behind > '50'
+        env:
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+        run: |
+          MSG=$(cat <<EOF
+          🚨 Hermes prod-rebase health alert
+
+          In the last 12 runs of prod-rebase:
+            success:   ${{ steps.runs.outputs.success }}
+            failure:   ${{ steps.runs.outputs.failure }}
+            cancelled: ${{ steps.runs.outputs.cancelled }}
+
+          Divergence right now:
+            prod behind main: ${{ steps.divergence.outputs.behind }} commits
+            prod ahead of main: ${{ steps.divergence.outputs.ahead }} commits
+
+          Either no rebase has succeeded in 12h, or prod is >50 commits
+          behind main. Manual reconcile recommended.
+
+          Runs: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/prod-rebase.yml
+          EOF
+          )
+          curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            --data-urlencode "text=${MSG}" \
+            -d disable_web_page_preview=true \
+            | head -c 200
