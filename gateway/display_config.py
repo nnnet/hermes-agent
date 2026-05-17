@@ -41,6 +41,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # When true, also delete the bubbles for runs that failed (inactivity
+    # timeout, error, agent cancelled by interrupt). Off by default to
+    # preserve the breadcrumb-on-failure behavior; turn on if the noise of
+    # long-running stuck runs outweighs the diagnostic value of the trail.
+    # Requires `cleanup_progress: true` to have any effect.
+    "cleanup_progress_on_failure": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -194,7 +200,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
-    if setting == "cleanup_progress":
+    if setting in {"cleanup_progress", "cleanup_progress_on_failure"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

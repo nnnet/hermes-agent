@@ -131,6 +131,35 @@ class FailingAgent:
         }
 
 
+class ProgressThenFailingAgent:
+    """Like ProgressAgent (emits real progress bubbles) but returns failed=True.
+
+    Used to test ``cleanup_progress_on_failure``: we need actual bubbles to
+    have been sent (so ``_cleanup_msg_ids`` is non-empty) AND the run to
+    end in failure — FailingAgent only emits one early progress event and
+    can finish before the queue worker drains it.
+    """
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.25)
+            cb("tool.started", "terminal", "ls", {})
+            time.sleep(0.25)
+        return {
+            "final_response": "",
+            "messages": [],
+            "api_calls": 1,
+            "failed": True,
+            "error": "simulated provider failure",
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -154,7 +183,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool, cleanup_on_failure: bool = False):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -172,13 +201,19 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 
     # Wire the per-platform cleanup_progress flag via the config loader the
     # gateway actually reads (``_load_gateway_config`` returns user config).
-    cfg = {
-        "display": {
-            "platforms": {
-                "telegram": {"cleanup_progress": True},
+    if cleanup_on:
+        tg_cfg = {"cleanup_progress": True}
+        if cleanup_on_failure:
+            tg_cfg["cleanup_progress_on_failure"] = True
+        cfg = {
+            "display": {
+                "platforms": {
+                    "telegram": tg_cfg,
+                }
             }
         }
-    } if cleanup_on else {}
+    else:
+        cfg = {}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -291,6 +326,50 @@ async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_on_failure_flag_deletes_bubbles_on_failed_run(monkeypatch, tmp_path):
+    """With ``cleanup_progress_on_failure: true``, failed runs also clean up.
+
+    Default behaviour leaves breadcrumbs on failure (see
+    ``test_cleanup_skipped_on_failed_run`` above); this opt-in flips it so
+    the chat doesn't pile up with bubbles when long-running agents time
+    out or get interrupted.
+    """
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch, ProgressThenFailingAgent, cleanup_on=True, cleanup_on_failure=True
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result.get("failed") is True
+    # With the on-failure flag, a callback IS registered. Fire it and
+    # confirm at least one bubble was deleted.
+    cb = adapter.pop_post_delivery_callback(session_key)
+    assert callable(cb), "cleanup_progress_on_failure=true must register cleanup callback"
+    cb()
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+    assert len(adapter.deleted) >= 1, (
+        f"expected at least one deletion on failed run with cleanup_progress_on_failure=true; "
+        f"deleted={adapter.deleted} sent={adapter.sent}"
+    )
 
 
 @pytest.mark.asyncio

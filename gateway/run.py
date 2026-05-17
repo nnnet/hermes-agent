@@ -14773,9 +14773,15 @@ class GatewayRunner:
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
         # from the tool-progress / "Still working..." / status-callback bubbles
         # are collected here and deleted after the final response lands.
-        # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
+        # Failed runs skip cleanup by default so the bubbles remain as
+        # breadcrumbs; set ``cleanup_progress_on_failure: true`` to clean
+        # them up anyway (useful when the noise of long stuck runs outweighs
+        # the diagnostic value of the trail).
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
+        )
+        _cleanup_on_failure = bool(
+            resolve_display_setting(user_config, platform_key, "cleanup_progress_on_failure")
         )
         _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
@@ -16658,17 +16664,21 @@ class GatewayRunner:
                 response["already_sent"] = True
 
         # Schedule deletion of tracked temporary progress bubbles after the
-        # final response lands. Failed runs skip this so bubbles remain as
-        # breadcrumbs for the user to see what work happened. Only fires on
-        # adapters that support ``delete_message`` (see init above); failures
-        # are swallowed — deletion is best-effort.
+        # final response lands. Failed runs skip this by default so bubbles
+        # remain as breadcrumbs; ``cleanup_progress_on_failure: true`` flips
+        # this to clean up regardless. Only fires on adapters that support
+        # ``delete_message`` (see init above); failures are swallowed —
+        # deletion is best-effort.
+        _response_failed = (
+            isinstance(response, dict) and bool(response.get("failed"))
+        )
         if (
             _cleanup_progress
             and _cleanup_adapter is not None
             and _cleanup_msg_ids
             and session_key
             and isinstance(response, dict)
-            and not response.get("failed")
+            and (not _response_failed or _cleanup_on_failure)
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             _ids_snapshot = list(_cleanup_msg_ids)
