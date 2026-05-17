@@ -1642,7 +1642,7 @@
             "Show archived boards and tasks (restore from here)"),
         }, props.showArchive
           ? tx(t, "hideArchive", "Hide archive")
-          : tx(t, "showArchive", "Archives")),
+          : tx(t, "showArchive", "Archive")),
       ),
     );
   }

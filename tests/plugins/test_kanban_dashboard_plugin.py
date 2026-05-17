@@ -1796,32 +1796,29 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "failedIds" in js
 
 
-def test_dashboard_archive_viewer_button_label_distinct_from_action():
-    """The top-bar Archive viewer toggle must NOT collide with the Archive
-    action button on non-default boards.
+def test_dashboard_archive_viewer_button_label_matches_upstream():
+    """The top-bar Archive viewer toggle keeps the upstream label "Archive".
 
-    Why: Two buttons literally labeled "Archive" sit side-by-side in the
-    toolbar — one archives the current board, the other toggles the
-    archived-items viewer panel. PR #6 (kanban-board-archive-ui) shipped
-    both with the same label, which confused operators. The viewer
-    toggle is renamed to "Archives" (plural) so the two roles are
-    visually distinct.
-    What: Asserts the viewer toggle's English fallback string is
-    "Archives", and the action button still says "Archive".
-    Test: Run pytest on this file; both literal substrings must appear
-    in the bundle exactly once each in the toolbar context.
+    Why: PR #6 (kanban-board-archive-ui) once shipped a duplicate action
+    Archive button next to the viewer toggle, which forced a defensive
+    rename of the viewer toggle to "Archives" (plural). That duplicate
+    action button is now removed from the top toolbar (see commit
+    90450f147, fix/kanban-toolbar-cleanup), so the collision no longer
+    exists and the upstream label is restored.
+    What: Asserts the viewer toggle uses the upstream fallback "Archive"
+    and that the old defensive "Archives" plural is gone from the bundle.
+    Test: Run pytest on this file; the upstream substring must appear and
+    the plural workaround must not.
     """
     repo_root = Path(__file__).resolve().parents[2]
     js = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     ).read_text()
 
-    # Action button: archives the current board (default fallback "Archive").
-    assert 'tx(t, "archive", "Archive")' in js
-    # Viewer toggle: now "Archives" (plural) so the two buttons differ.
-    assert 'tx(t, "showArchive", "Archives")' in js
-    # Make sure the old colliding label is gone from the viewer toggle.
-    assert 'tx(t, "showArchive", "Archive")' not in js
+    # Viewer toggle: upstream label "Archive" (singular) restored.
+    assert 'tx(t, "showArchive", "Archive")' in js
+    # Defensive plural rename from the duplicate-button era must be gone.
+    assert 'tx(t, "showArchive", "Archives")' not in js
 
 
 def test_dashboard_hard_delete_supports_cascade_query_param():
