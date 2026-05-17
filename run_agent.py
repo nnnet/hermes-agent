@@ -7509,6 +7509,89 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _claude_agent_sdk_create(self, api_kwargs: dict):
+        """Run a single-turn ``claude_agent_sdk.query()`` and return the message list.
+
+        Why
+            Hermes' agent loop is synchronous; the SDK's ``query()`` returns
+            an ``AsyncIterator[Message]``.  We bridge with a fresh
+            ``asyncio.run`` per call — single-turn ``max_turns=1`` calls
+            complete in one CLI subprocess invocation so there is no
+            persistent event loop to keep alive.
+        What
+            Pulls the sentinel-keyed ``prompt`` + ``options`` out of
+            ``api_kwargs``, lazy-imports ``claude_agent_sdk``, drains the
+            async-iter into a concrete list, and returns it.  Downstream
+            (``normalize_response`` on the SDK transport) consumes the
+            list and produces a ``NormalizedResponse`` carrying any
+            tool_use blocks, so Hermes' loop can execute them.
+        Test
+            See ``tests/agent/test_claude_agent_sdk_dispatch.py`` —
+            mocks ``claude_agent_sdk.query`` to yield a fake message
+            stream and asserts the agent receives ``NormalizedResponse``
+            with text + tool_use preserved.
+
+        Error handling
+            * ``claude_agent_sdk`` not installed → ``RuntimeError`` with
+              the ``pip install hermes-agent[claude-agent-sdk]`` hint.
+            * CLI auth missing (``CLINotFoundError`` /
+              ``CLIConnectionError`` from the SDK) → re-raised as
+              ``RuntimeError`` pointing the user at ``claude /login``
+              on the host.  Other SDK errors propagate unchanged.
+        """
+        # The transport hands us sentinel keys on the kwargs dict; pull
+        # them out, leave anything else (future-proofing) untouched.
+        prompt = api_kwargs.get("prompt", "") or ""
+        options = api_kwargs.get("options")
+
+        try:
+            import claude_agent_sdk  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "claude_agent_sdk is not installed.  Install with:\n"
+                "    pip install 'hermes-agent[claude-agent-sdk]'\n"
+                "or directly:\n"
+                "    pip install claude-agent-sdk"
+            ) from exc
+
+        # The SDK exposes specific exception types for CLI/auth failures.
+        # We map the two most actionable ones to RuntimeErrors with
+        # operator-friendly hints so they surface in Hermes logs in the
+        # same shape as other provider errors.
+        _CLINotFoundError = getattr(claude_agent_sdk, "CLINotFoundError", None)
+        _CLIConnectionError = getattr(claude_agent_sdk, "CLIConnectionError", None)
+
+        async def _collect() -> list:
+            collected: list = []
+            async for msg in claude_agent_sdk.query(prompt=prompt, options=options):
+                collected.append(msg)
+            return collected
+
+        try:
+            return asyncio.run(_collect())
+        except Exception as exc:
+            # CLI binary not on PATH inside the worker.  The SDK bundles
+            # its own ``claude`` CLI when installed, but a stripped
+            # environment (or a broken install) can still hit this.
+            if _CLINotFoundError is not None and isinstance(exc, _CLINotFoundError):
+                raise RuntimeError(
+                    "Claude Code CLI not found.  Ensure the "
+                    "'hermes-agent[claude-agent-sdk]' extra is installed; "
+                    "the package bundles the CLI binary.  On host installs, "
+                    "verify ~/.claude/.credentials.json exists and run "
+                    "`claude /login` on the host if not."
+                ) from exc
+            # OAuth credentials missing or unreadable.  The SDK reads
+            # ~/.claude/.credentials.json (or $CLAUDE_CONFIG_DIR/.credentials.json).
+            if _CLIConnectionError is not None and isinstance(exc, _CLIConnectionError):
+                raise RuntimeError(
+                    "Claude Code CLI failed to authenticate.  Check that "
+                    "~/.claude/.credentials.json exists on the host and is "
+                    "readable from inside the container (if dockerized).  "
+                    "If missing, run `claude /login` on the host."
+                ) from exc
+            raise
+
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.
 
@@ -7566,6 +7649,12 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "claude_agent_sdk_single_turn":
+                    # Single-turn SDK delegation.  Bridges async-iter
+                    # ``query()`` → sync list-of-messages; the response
+                    # validator + normalizer paths below treat the list
+                    # uniformly (transport.normalize_response drains it).
+                    result["response"] = self._claude_agent_sdk_create(api_kwargs)
                 elif self.api_mode == "bedrock_converse":
                     # Bedrock uses boto3 directly — no OpenAI client needed.
                     # normalize_converse_response produces an OpenAI-compatible
@@ -7884,6 +7973,24 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+
+        if self.api_mode == "claude_agent_sdk_single_turn":
+            # The SDK's ``query()`` runs a Claude CLI subprocess that
+            # delivers complete ``Message`` objects, not token-level
+            # deltas in the shape the stream-delta callback expects.
+            # Single-turn invocations finish in one CLI roundtrip, so
+            # there is no real streaming win — delegate to the non-
+            # streaming path and fire ``on_first_delta`` once the
+            # response is in hand to clear the thinking spinner.
+            try:
+                response = self._interruptible_api_call(api_kwargs)
+            finally:
+                if on_first_delta:
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
+            return response
 
         # Bedrock Converse uses boto3's converse_stream() with real-time delta
         # callbacks — same UX as Anthropic and chat_completions streaming.
@@ -9611,6 +9718,24 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            )
+
+        # Claude Agent SDK (single-turn delegation) — spawns the host
+        # Claude Code CLI via the official ``claude-agent-sdk`` package.
+        # The transport pins ``max_turns=1`` and ``allowed_tools=[]`` so
+        # Hermes' own agent loop stays in charge of tool execution; the
+        # SDK is used only as the wire surface to one Claude call backed
+        # by host subscription auth.  Sentinel-keyed kwargs in the
+        # returned dict are consumed by ``_interruptible_api_call`` —
+        # see ``_claude_agent_sdk_create`` for the call site.
+        if self.api_mode == "claude_agent_sdk_single_turn":
+            _cas_t = self._get_transport()
+            anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
+            return _cas_t.build_kwargs(
+                model=self.model,
+                messages=anthropic_messages,
+                tools=tools_for_api,
+                base_url=getattr(self, "_anthropic_base_url", None),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -12843,6 +12968,21 @@ class AIAgent:
                                 error_details.append("response is None")
                             else:
                                 error_details.append("Bedrock response invalid (no output or choices)")
+                    elif self.api_mode == "claude_agent_sdk_single_turn":
+                        # The SDK transport returns the raw drained message
+                        # list; an empty list means the CLI subprocess
+                        # produced no AssistantMessage / ResultMessage at
+                        # all, which is a hard failure (auth dropped, CLI
+                        # crash, etc.) and should route to the fallback
+                        # chain just like an empty Anthropic response.
+                        if response is None:
+                            response_invalid = True
+                            error_details.append("response is None")
+                        elif not isinstance(response, list) or not response:
+                            response_invalid = True
+                            error_details.append(
+                                "Claude Agent SDK response is empty (no messages produced)"
+                            )
                     else:
                         _ctv = self._get_transport()
                         if not _ctv.validate_response(response):
@@ -13011,6 +13151,14 @@ class AIAgent:
                         _bt_fr = self._get_transport()
                         _bedrock_result = _bt_fr.normalize_response(response)
                         finish_reason = _bedrock_result.finish_reason
+                    elif self.api_mode == "claude_agent_sdk_single_turn":
+                        # SDK response is a drained list of Message objects.
+                        # The transport's normalize_response inspects the
+                        # trailing ResultMessage (if any) for stop_reason
+                        # and falls back to inferring from tool_use blocks.
+                        _sdk_fr = self._get_transport()
+                        _sdk_finish_result = _sdk_fr.normalize_response(response)
+                        finish_reason = _sdk_finish_result.finish_reason
                     else:
                         _cc_fr = self._get_transport()
                         _finish_result = _cc_fr.normalize_response(response)
