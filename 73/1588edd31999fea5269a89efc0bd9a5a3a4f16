@@ -1,0 +1,117 @@
+tests/agent/transports/test_codex_app_server_session.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 12,17,349-365,688-715
+tools/delegate_tool.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 34-38,2450
+tests/tools/test_mcp_stability.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 138,166
+website/docs/user-guide/features/codex-app-server-runtime.md
+  s_e5369d415d379b::t_363b3e33bcc8c0 94,98
+tests/gateway/test_voice_command.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 464
+tests/tools/test_schema_sanitizer.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 307-330,387-493
+tools/xai_http.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 15-17,21-22
+tests/tools/test_voice_cli_integration.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 485-489
+ui-tui/packages/hermes-ink/src/entry-exports.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 29
+tests/gateway/test_telegram_thread_fallback.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 411
+hermes_cli/model_switch.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 1695-1710
+hermes_cli/auth.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 5315-5415,5496-5503
+run_agent.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 3687-3691
+tests/gateway/test_google_chat.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 2743
+tests/hermes_cli/test_doctor.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 323,430,468,480-521,558,605,644,684,733,792,904,941-942,959,967,976,979-987,998,1009,1014-1225
+ui-tui/src/__tests__/cursorDriftRegression.test.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 1-114
+agent/transports/codex_app_server_session.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 407,415,443,474,517
+agent/transports/codex_app_server.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 82-113
+hermes_cli/gateway.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 2113-2118,2122,2128,2133,2136
+tests/run_agent/test_provider_parity.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 257-262,353-358,365-370
+hermes_cli/main.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 9634-9635
+scripts/release.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 1153-1164
+tests/tools/test_mcp_tool.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 3784-3787,3790,3795-3798,3801-3803,3812-3814,3818-3821,3824,3830-3880,3884-3887,3890-3891
+tools/send_message_tool.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 31-32,335-337,341-345
+hermes_cli/doctor.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 165-169,171-181,654-658,660-662,664-665,667-677,679-688,836-848
+tests/tools/test_transcription_dotenv_fallback.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 61-87
+ui-tui/src/components/textInput.tsx
+  s_e5369d415d379b::t_363b3e33bcc8c0 275-290
+web/src/components/ChatSidebar.tsx
+  s_e5369d415d379b::t_363b3e33bcc8c0 33,164
+tests/gateway/test_background_command.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 319
+agent/auxiliary_client.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 427
+gateway/run.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 8987-8992,8994-8995
+hermes_cli/status.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 262-282
+web/src/lib/gatewayClient.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 16-17,122
+tests/gateway/test_teams.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 766
+web/src/pages/ChatPage.tsx
+  s_e5369d415d379b::t_363b3e33bcc8c0 27,48
+tests/run_agent/test_run_agent.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 2285,2288-2289,2297-2298,2303,2306,2314,2319,2323-2324,2332-2333
+tests/tools/test_delegate.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 1017-1099
+tests/tools/test_send_message_tool.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 185-259,581-582,924-933,1006-1010
+ui-tui/packages/hermes-ink/index.d.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 37
+tests/hermes_cli/test_xai_oauth_pkce_token_exchange.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 1-359
+tests/hermes_cli/test_status.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 32,74,101,115-334
+hermes_cli/web_server.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 4438-4441
+tools/mcp_tool.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 1164,1700,2071-2078,2083-2084,2967-2979,3114,3151,3336-3340,3347-3348,3545
+ui-tui/src/lib/inputMetrics.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 1,23-34,36-39,41,44-61,63,67-79,81-82,84-85,88,91,94-97,114-119,136-143
+tests/agent/transports/test_codex_app_server_runtime.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 244-298
+acp_registry/agent.json
+  s_e5369d415d379b::t_363b3e33bcc8c0 4,12
+agent/chat_completion_helpers.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 36,313-327,1332-1334,1340,1343,1931-1936
+tests/tools/test_dockerfile_pid1_reaping.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 124-137
+ui-tui/src/__tests__/textInputWrap.test.ts
+  s_e5369d415d379b::t_363b3e33bcc8c0 1,7-17,27-44,48,52-56,74-90,94-97,99-100
+tools/schema_sanitizer.py
+  s_e5369d415d379b::t_363b3e33bcc8c0 358-362,367-374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "731588edd31999fea5269a89efc0bd9a5a3a4f16",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
