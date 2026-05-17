@@ -1,0 +1,30 @@
+skills/devops/chief-manager/SKILL.md
+  s_e5369d415d379b::t_a0fa65e689ff6b 1-132
+tests/tools/test_kanban_tools.py
+  s_e5369d415d379b::t_2f8e227954ee7f 1393-1396
+  s_e5369d415d379b::t_6a93d6a657ebbe 1187-1192
+tools/chief_tools.py
+  s_e5369d415d379b::t_549d99a039d23d 1-695
+hermes_cli/kanban_db.py
+  s_e5369d415d379b::t_71bf0ee05a2c9a 463,470-472,483
+  s_e5369d415d379b::t_7026f8cdcc575c 407,413-419,436-443
+tests/tools/test_chief_tools.py
+  s_e5369d415d379b::t_c9c5b6568f44cc 284
+  s_e5369d415d379b::t_aa85bf6b762795 1-283,285-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "420d1835dcd776cc29bbf005ddb11c6c4a3fca84",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
