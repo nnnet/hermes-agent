@@ -904,15 +904,88 @@
       });
     }, [loadBoardList, switchBoard, board]);
 
-    const deleteBoard = useCallback(function (slug) {
+    // Board lifecycle: archive (recoverable), hard-delete (zero-task rule),
+    // and restore. Each surface (Archive / Delete / Restore) calls the
+    // matching endpoint, surfaces 409 integrity errors verbatim via the
+    // existing error banner channel, and refreshes the board list on
+    // success. Cascade is plumbed through for the non-empty-archive path.
+    //
+    // Returns a Promise that resolves on success and rejects on failure
+    // so the dialog/button can show inline feedback.
+    const archiveBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
       if (!slug || slug === "default") return Promise.resolve();
-      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
-        method: "DELETE",
-      }).then(function () {
+      const cascade = !!opts.cascade;
+      const qs = cascade ? "?cascade=true" : "";
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}/archive${qs}`, {
+        method: "POST",
+      }).then(function (res) {
         loadBoardList();
         if (board === slug) switchBoard("default");
+        return res;
+      }).catch(function (err) {
+        // Surface 409 integrity errors with the server-provided text.
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "archiveBoardFailed", "Archive failed: ") + msg);
+        throw err;
       });
-    }, [board, loadBoardList, switchBoard]);
+    }, [board, loadBoardList, switchBoard, t]);
+
+    const hardDeleteBoard = useCallback(function (slug) {
+      if (!slug || slug === "default") return Promise.resolve();
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}?delete=true`, {
+        method: "DELETE",
+      }).then(function (res) {
+        loadBoardList();
+        if (board === slug) switchBoard("default");
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "deleteBoardFailed", "Delete failed: ") + msg);
+        throw err;
+      });
+    }, [board, loadBoardList, switchBoard, t]);
+
+    const restoreBoard = useCallback(function (slug) {
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}/restore`, {
+        method: "POST",
+      }).then(function (res) {
+        loadBoardList();
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "restoreBoardFailed", "Restore failed: ") + msg);
+        throw err;
+      });
+    }, [loadBoardList, t]);
+
+    const restoreTask = useCallback(function (taskId, taskBoard) {
+      const qs = taskBoard ? `?board=${encodeURIComponent(taskBoard)}` : "";
+      return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}/restore${qs}`, {
+        method: "POST",
+      }).then(function (res) {
+        loadBoard();
+        return res;
+      }).catch(function (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        setError(tx(t, "restoreTaskFailed", "Restore failed: ") + msg);
+        throw err;
+      });
+    }, [loadBoard, t]);
+
+    // Back-compat: keep `deleteBoard` as a default-archive entrypoint so
+    // existing call sites work. Shift-click + button copy below give the
+    // user the explicit hard-delete affordance.
+    const deleteBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
+      if (opts.hardDelete) return hardDeleteBoard(slug);
+      return archiveBoard(slug, { cascade: !!opts.cascade });
+    }, [archiveBoard, hardDeleteBoard]);
+
+    // Archive Viewer state — toggles a separate panel that lists archived
+    // boards + tasks with per-row restore buttons. Hidden by default so
+    // the main board view stays the focus.
+    const [showArchive, setShowArchive] = useState(false);
 
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
@@ -942,7 +1015,17 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
+          onHardDeleteBoard: hardDeleteBoard,
+          onArchiveBoard: archiveBoard,
+          showArchive: showArchive,
+          onToggleArchive: function () { setShowArchive(function (v) { return !v; }); },
         }),
+        showArchive ? h(ArchiveViewer, {
+          currentBoard: board,
+          onRestoreBoard: restoreBoard,
+          onRestoreTask: restoreTask,
+          onClose: function () { setShowArchive(false); },
+        }) : null,
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
           onCreate: function (payload) {
@@ -1488,20 +1571,239 @@
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
+        // Archive / Hard-delete buttons. Shift-click on Archive escalates
+        // to hard delete for power users; the explicit Delete button is
+        // shown alongside for discoverability. Hard delete refuses (409)
+        // when the board has any tasks — the integrity rule lives on the
+        // backend so even a malicious / outdated UI can't cause data loss.
         props.board !== "default"
           ? h(Button, {
-            onClick: function () {
+            onClick: function (ev) {
+              const hardDelete = !!(ev && (ev.shiftKey || ev.altKey));
+              if (hardDelete) {
+                const msg = tx(t, "hardDeleteBoardConfirm",
+                  "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
+                  { name: currentName });
+                if (window.confirm(msg) && props.onHardDeleteBoard) {
+                  props.onHardDeleteBoard(props.board).catch(function () {});
+                }
+                return;
+              }
               const msg = tx(t, "archiveBoardConfirm",
                 "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
                 { name: currentName });
-              if (window.confirm(msg)) props.onDeleteBoard(props.board);
+              if (!window.confirm(msg)) return;
+              const handler = props.onArchiveBoard || props.onDeleteBoard;
+              handler(props.board).catch(function (err) {
+                // 409 with live_task_count → offer cascade. Server returns
+                // structured detail in err.body when available; fall back
+                // to a generic prompt asking the user to retry with cascade.
+                const detail = (err && err.body && err.body.detail) || {};
+                const live = detail.live_task_count;
+                if (live && live > 0) {
+                  const cmsg = tx(t, "archiveCascadeConfirm",
+                    "Board '{name}' has {n} non-archived task(s). Archive the board AND every task on it?",
+                    { name: currentName, n: String(live) });
+                  if (window.confirm(cmsg)) {
+                    handler(props.board, { cascade: true }).catch(function () {});
+                  }
+                }
+              });
             },
             size: "sm",
             className: "h-8",
-            title: tx(t, "archiveBoardTitle", "Archive this board"),
+            title: tx(t, "archiveBoardTitle",
+              "Archive this board (Shift-click for hard delete — irreversible, zero-task required)"),
           }, tx(t, "archive", "Archive"))
           : null,
+        props.board !== "default"
+          ? h(Button, {
+            onClick: function () {
+              const msg = tx(t, "hardDeleteBoardConfirm",
+                "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
+                { name: currentName });
+              if (window.confirm(msg) && props.onHardDeleteBoard) {
+                props.onHardDeleteBoard(props.board).catch(function () {});
+              }
+            },
+            size: "sm",
+            className: "h-8 hermes-kanban-board-delete",
+            title: tx(t, "hardDeleteBoardTitle",
+              "Permanently delete this board (zero-task required)"),
+          }, tx(t, "delete", "Delete"))
+          : null,
+        h(Button, {
+          onClick: function () { if (props.onToggleArchive) props.onToggleArchive(); },
+          size: "sm",
+          className: "h-8",
+          title: tx(t, "archiveViewTitle",
+            "Show archived boards and tasks (restore from here)"),
+        }, props.showArchive
+          ? tx(t, "hideArchive", "Hide archive")
+          : tx(t, "showArchive", "Archive")),
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Archive Viewer — separate panel that lists every archived board
+  // (from boards/_archived/) plus every archived task on the current
+  // board, with per-row Restore buttons. Toggled from BoardSwitcher.
+  //
+  // Two parallel fetches on mount:
+  //   GET /boards/archived              — archived board dirs
+  //   GET /tasks/archived?board=<slug>  — archived tasks on the current
+  //                                       board (avoids fan-out across
+  //                                       every active board)
+  //
+  // Restore failures bubble up as alert() so the user sees the integrity
+  // error (e.g. trying to restore a board whose slug collides with an
+  // already-active one).
+  // ---------------------------------------------------------------------
+  function ArchiveViewer(props) {
+    const { t } = useI18n();
+    const [boards, setBoards] = useState([]);
+    const [tasks, setTasks] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [reloadTick, setReloadTick] = useState(0);
+    const [allBoards, setAllBoards] = useState(false);
+
+    useEffect(function () {
+      let cancelled = false;
+      setLoading(true);
+      const boardsUrl = `${API}/boards/archived`;
+      const tasksUrl = allBoards
+        ? `${API}/tasks/archived?all_boards=true`
+        : `${API}/tasks/archived?board=${encodeURIComponent(props.currentBoard || "default")}`;
+      Promise.all([
+        SDK.fetchJSON(boardsUrl).catch(function () { return { archived_boards: [] }; }),
+        SDK.fetchJSON(tasksUrl).catch(function () { return { archived_tasks: [] }; }),
+      ]).then(function (results) {
+        if (cancelled) return;
+        setBoards(results[0].archived_boards || []);
+        setTasks(results[1].archived_tasks || []);
+        setLoading(false);
+      });
+      return function () { cancelled = true; };
+    }, [props.currentBoard, allBoards, reloadTick]);
+
+    function handleRestoreBoard(slug) {
+      const msg = tx(t, "restoreBoardConfirm",
+        "Restore archived board '{slug}'?", { slug: slug });
+      if (!window.confirm(msg)) return;
+      props.onRestoreBoard(slug)
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "restoreBoardFailedAlert", "Restore failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    function handleRestoreTask(taskId, taskBoard) {
+      props.onRestoreTask(taskId, taskBoard)
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "restoreTaskFailedAlert", "Restore failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    return h("div", { className: "hermes-kanban-archive-viewer p-4 border rounded" },
+      h("div", { className: "flex items-center gap-3 mb-3" },
+        h("div", { className: "font-medium text-sm" },
+          tx(t, "archiveViewer", "Archive")),
+        h("div", { className: "flex-1" }),
+        h("label", { className: "text-xs flex items-center gap-1" },
+          h("input", {
+            type: "checkbox",
+            checked: allBoards,
+            onChange: function (e) { setAllBoards(!!e.target.checked); },
+          }),
+          tx(t, "tasksAllBoards", "Tasks from all boards"),
+        ),
+        h(Button, {
+          size: "sm",
+          onClick: function () { setReloadTick(function (v) { return v + 1; }); },
+          title: tx(t, "refresh", "Refresh"),
+        }, tx(t, "refresh", "Refresh")),
+        h(Button, {
+          size: "sm",
+          onClick: props.onClose,
+          title: tx(t, "closeArchive", "Close archive view"),
+        }, tx(t, "close", "Close")),
+      ),
+      loading
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(t, "loadingArchive", "Loading archive…"))
+        : h("div", { className: "flex flex-col gap-4" },
+          // Boards section
+          h("div", null,
+            h("div", { className: "text-xs uppercase text-muted-foreground mb-1" },
+              tx(t, "archivedBoards", "Archived boards"),
+              " (", String(boards.length), ")",
+            ),
+            boards.length === 0
+              ? h("div", { className: "text-xs text-muted-foreground italic" },
+                  tx(t, "noArchivedBoards", "No archived boards."))
+              : h("div", { className: "flex flex-col gap-1" },
+                boards.map(function (b) {
+                  const ts = b.archived_at
+                    ? new Date(b.archived_at * 1000).toLocaleString()
+                    : tx(t, "unknown", "unknown");
+                  return h("div", {
+                    key: b.archived_dir,
+                    className: "flex items-center gap-2 text-xs border rounded px-2 py-1",
+                  },
+                    h("span", { className: "font-mono" }, b.slug),
+                    h("span", { className: "text-muted-foreground" },
+                      `· ${b.total || 0} task${b.total === 1 ? "" : "s"} · ${ts}`),
+                    h("div", { className: "flex-1" }),
+                    h(Button, {
+                      size: "sm",
+                      disabled: !b.can_restore,
+                      title: b.can_restore
+                        ? tx(t, "restoreBoardTitle", "Restore this board")
+                        : tx(t, "restoreCollisionTitle",
+                          "An active board with this slug already exists"),
+                      onClick: function () { handleRestoreBoard(b.slug); },
+                    }, tx(t, "restore", "Restore")),
+                  );
+                }),
+              ),
+          ),
+          // Tasks section
+          h("div", null,
+            h("div", { className: "text-xs uppercase text-muted-foreground mb-1" },
+              tx(t, "archivedTasks", "Archived tasks"),
+              " (", String(tasks.length), ")",
+            ),
+            tasks.length === 0
+              ? h("div", { className: "text-xs text-muted-foreground italic" },
+                  tx(t, "noArchivedTasks", "No archived tasks on this board."))
+              : h("div", { className: "flex flex-col gap-1" },
+                tasks.map(function (tk) {
+                  return h("div", {
+                    key: (tk.board_slug || "default") + "::" + tk.id,
+                    className: "flex items-center gap-2 text-xs border rounded px-2 py-1",
+                  },
+                    h("span", { className: "font-mono text-muted-foreground" },
+                      tk.id.slice(0, 8)),
+                    h("span", { className: "truncate flex-1" }, tk.title),
+                    allBoards
+                      ? h("span", { className: "text-muted-foreground" },
+                          "[" + (tk.board_slug || "default") + "]")
+                      : null,
+                    h(Button, {
+                      size: "sm",
+                      title: tx(t, "restoreTaskTitle",
+                        "Restore this task to 'todo' status"),
+                      onClick: function () { handleRestoreTask(tk.id, tk.board_slug); },
+                    }, tx(t, "restore", "Restore")),
+                  );
+                }),
+              ),
+          ),
+        ),
     );
   }
 
