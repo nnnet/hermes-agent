@@ -931,9 +931,17 @@
       });
     }, [board, loadBoardList, switchBoard, t]);
 
-    const hardDeleteBoard = useCallback(function (slug) {
+    // Hard-delete with optional cascade. Cascade is the explicit opt-in for
+    // destroying a non-empty board (active + archived tasks); without it the
+    // backend returns 409 so the user can't wipe data with a single misclick.
+    // Why: see Issue 1 — clicking [Delete] on a non-empty board used to dead-
+    // end at the 409 banner with no way forward.
+    const hardDeleteBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
       if (!slug || slug === "default") return Promise.resolve();
-      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}?delete=true`, {
+      const cascade = !!opts.cascade;
+      const qs = cascade ? "?delete=true&cascade=true" : "?delete=true";
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}${qs}`, {
         method: "DELETE",
       }).then(function (res) {
         loadBoardList();
@@ -1573,22 +1581,42 @@
         }, tx(t, "newBoard", "+ New board")),
         // Archive / Hard-delete buttons. Shift-click on Archive escalates
         // to hard delete for power users; the explicit Delete button is
-        // shown alongside for discoverability. Hard delete refuses (409)
-        // when the board has any tasks — the integrity rule lives on the
-        // backend so even a malicious / outdated UI can't cause data loss.
+        // shown alongside for discoverability.
+        //
+        // Hard-delete UX (shared by shift-Archive and Delete):
+        //   * Empty board (currentTotal === 0) — single confirm, fire.
+        //   * Non-empty board — TWO confirms: first describes the
+        //     consequences and recommends Archive; second is the
+        //     "absolutely sure" gate. Only then does the call go through
+        //     with cascade=true. The backend integrity rule (refuse-by-
+        //     default on non-empty boards) stays intact — even an outdated
+        //     UI can't wipe data without explicit cascade.
+        function confirmAndHardDelete() {
+          if (!props.onHardDeleteBoard) return;
+          if (!currentTotal || currentTotal <= 0) {
+            const msg = tx(t, "hardDeleteEmptyBoardConfirm",
+              "Delete empty board '{name}'? This removes the directory permanently.",
+              { name: currentName });
+            if (window.confirm(msg)) {
+              props.onHardDeleteBoard(props.board).catch(function () {});
+            }
+            return;
+          }
+          const msg1 = tx(t, "hardDeleteNonEmptyBoardConfirm",
+            "Board '{name}' has {n} task(s). This will PERMANENTLY delete the board AND every task on it (active + archived). This cannot be undone. Consider Archive instead. Proceed with hard delete?",
+            { name: currentName, n: String(currentTotal) });
+          if (!window.confirm(msg1)) return;
+          const msg2 = tx(t, "hardDeleteNonEmptyBoardConfirm2",
+            "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
+            { name: currentName, n: String(currentTotal) });
+          if (!window.confirm(msg2)) return;
+          props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
+        }
         props.board !== "default"
           ? h(Button, {
             onClick: function (ev) {
               const hardDelete = !!(ev && (ev.shiftKey || ev.altKey));
-              if (hardDelete) {
-                const msg = tx(t, "hardDeleteBoardConfirm",
-                  "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
-                  { name: currentName });
-                if (window.confirm(msg) && props.onHardDeleteBoard) {
-                  props.onHardDeleteBoard(props.board).catch(function () {});
-                }
-                return;
-              }
+              if (hardDelete) { confirmAndHardDelete(); return; }
               const msg = tx(t, "archiveBoardConfirm",
                 "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
                 { name: currentName });
@@ -1613,23 +1641,16 @@
             size: "sm",
             className: "h-8",
             title: tx(t, "archiveBoardTitle",
-              "Archive this board (Shift-click for hard delete — irreversible, zero-task required)"),
+              "Archive this board (recoverable). Shift-click for hard delete (destructive)."),
           }, tx(t, "archive", "Archive"))
           : null,
         props.board !== "default"
           ? h(Button, {
-            onClick: function () {
-              const msg = tx(t, "hardDeleteBoardConfirm",
-                "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
-                { name: currentName });
-              if (window.confirm(msg) && props.onHardDeleteBoard) {
-                props.onHardDeleteBoard(props.board).catch(function () {});
-              }
-            },
+            onClick: confirmAndHardDelete,
             size: "sm",
             className: "h-8 hermes-kanban-board-delete",
             title: tx(t, "hardDeleteBoardTitle",
-              "Permanently delete this board (zero-task required)"),
+              "Permanently delete this board (and all its tasks if non-empty)"),
           }, tx(t, "delete", "Delete"))
           : null,
         h(Button, {

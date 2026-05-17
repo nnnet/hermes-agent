@@ -1824,6 +1824,64 @@ def test_dashboard_archive_viewer_button_label_distinct_from_action():
     assert 'tx(t, "showArchive", "Archive")' not in js
 
 
+def test_dashboard_hard_delete_supports_cascade_query_param():
+    """The hardDeleteBoard callback must thread cascade=true through to the
+    DELETE endpoint so the dashboard can destroy a non-empty board after the
+    user explicitly confirms.
+
+    Why: Issue 1 from the field — clicking [Delete] on a non-empty board
+    used to return 409 with no path forward. The fix lets the UI pass
+    cascade=true after a two-step confirm; the backend retains its
+    integrity rule (refuse-by-default) so a stale UI still can't wipe
+    data silently.
+    What: Asserts the bundle builds the correct query string for both
+    branches (no-cascade vs cascade) and that the click handler routes
+    through the shared confirm helper.
+    Test: Substring checks against the built bundle for the
+    cascade=true URL pattern and the helper name.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # hardDeleteBoard now accepts an opts arg with cascade.
+    assert "function (slug, opts)" in js
+    # Query string includes cascade=true when opted in, default delete=true otherwise.
+    assert '"?delete=true&cascade=true"' in js
+    assert '"?delete=true"' in js
+    # Shared confirm helper exists and routes through onHardDeleteBoard.
+    assert "function confirmAndHardDelete()" in js
+    assert "props.onHardDeleteBoard(props.board, { cascade: true })" in js
+
+
+def test_dashboard_hard_delete_non_empty_uses_two_step_confirm():
+    """Non-empty board hard-delete must require TWO confirms before firing.
+
+    Why: A single misclick on [Delete] used to dead-end at 409; the cure
+    must not over-correct into a single-confirm cascade wipe. The
+    two-step pattern (consequences → "absolutely sure") matches the
+    PM-supplied UX rule for irreversible destructive actions.
+    What: The bundle must contain both confirm copy strings and route
+    through them in sequence; empty boards still use the single-confirm
+    path.
+    Test: Substring checks for the two-step strings and the empty-board
+    fallback copy.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Empty-board single confirm.
+    assert "hardDeleteEmptyBoardConfirm" in js
+    # Non-empty two-step confirms.
+    assert "hardDeleteNonEmptyBoardConfirm" in js
+    assert "hardDeleteNonEmptyBoardConfirm2" in js
+    # Branching on currentTotal so empty boards skip the harsh wording.
+    assert "if (!currentTotal || currentTotal <= 0)" in js
+
+
 def test_dashboard_card_ago_collapses_duplicate_bucket():
     """Card meta row must hide the redundant "/ second timeAgo" when both
     timeAgo() calls collapse to the same coarse bucket.
