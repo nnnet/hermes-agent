@@ -1044,6 +1044,8 @@
           currentBoard: board,
           onRestoreBoard: restoreBoard,
           onRestoreTask: restoreTask,
+          onArchiveBoard: archiveBoard,
+          onHardDeleteBoard: hardDeleteBoard,
           onClose: function () { setShowArchive(false); },
         }) : null,
         showNewBoard ? h(NewBoardDialog, {
@@ -1623,29 +1625,18 @@
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        // Archive viewer toggle FIRST, then Delete — recoverable action
-        // listed before destructive one (user preference).
+        // Archive viewer toggle. No Delete button on toolbar — destructive
+        // hard-delete is now only reachable on already-archived boards from
+        // inside the Archive panel (workflow: Archive → review → Delete).
         h(Button, {
           onClick: function () { if (props.onToggleArchive) props.onToggleArchive(); },
           size: "sm",
           className: "h-8",
           title: tx(t, "archiveViewTitle",
-            "Show archived boards and tasks (restore from here)"),
+            "Show archived boards and tasks (restore or hard-delete from here)"),
         }, props.showArchive
           ? tx(t, "hideArchive", "Hide archive")
           : tx(t, "showArchive", "Archive")),
-        // Delete — only path to remove a non-default board from the toolbar.
-        // confirmAndHardDelete() offers a 2-step confirm with an "Archive
-        // instead" recommendation for non-empty boards.
-        props.board !== "default"
-          ? h(Button, {
-            onClick: confirmAndHardDelete,
-            size: "sm",
-            className: "h-8 hermes-kanban-board-delete",
-            title: tx(t, "hardDeleteBoardTitle",
-              "Permanently delete this board (and all its tasks if non-empty)"),
-          }, tx(t, "delete", "Delete"))
-          : null,
       ),
     );
   }
@@ -1704,6 +1695,45 @@
         });
     }
 
+    function handleArchiveCurrentBoard() {
+      if (!props.onArchiveBoard) return;
+      const slug = props.currentBoard;
+      if (!slug || slug === "default") {
+        alert(tx(t, "cannotArchiveDefault",
+          "Cannot archive the 'default' board. Switch to another board first."));
+        return;
+      }
+      const msg = tx(t, "archiveBoardConfirm",
+        "Archive board '{slug}'? It will move to the archive list below " +
+        "(recoverable). All its tasks (active + archived) move with it.",
+        { slug: slug });
+      if (!window.confirm(msg)) return;
+      props.onArchiveBoard(slug, { cascade: true })
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "archiveBoardFailedAlert", "Archive failed: ") +
+            (err && err.message ? err.message : err));
+        });
+    }
+
+    function handleHardDeleteArchivedBoard(slug) {
+      if (!props.onHardDeleteBoard) return;
+      const msg1 = tx(t, "hardDeleteArchivedConfirm",
+        "PERMANENTLY delete archived board '{slug}'? This wipes its " +
+        "directory from disk — cannot be undone.", { slug: slug });
+      if (!window.confirm(msg1)) return;
+      const msg2 = tx(t, "hardDeleteArchivedConfirm2",
+        "ABSOLUTELY SURE? Board '{slug}' and every task in it will be " +
+        "gone forever.", { slug: slug });
+      if (!window.confirm(msg2)) return;
+      props.onHardDeleteBoard(slug, { cascade: true })
+        .then(function () { setReloadTick(function (v) { return v + 1; }); })
+        .catch(function (err) {
+          alert(tx(t, "hardDeleteArchivedFailedAlert",
+            "Delete failed: ") + (err && err.message ? err.message : err));
+        });
+    }
+
     function handleRestoreTask(taskId, taskBoard) {
       props.onRestoreTask(taskId, taskBoard)
         .then(function () { setReloadTick(function (v) { return v + 1; }); })
@@ -1731,6 +1761,16 @@
           onClick: function () { setReloadTick(function (v) { return v + 1; }); },
           title: tx(t, "refresh", "Refresh"),
         }, tx(t, "refresh", "Refresh")),
+        // ToArchive — archives the currently active board (moves it into
+        // the list below). Hidden for the default board (can't be archived).
+        props.currentBoard && props.currentBoard !== "default"
+          ? h(Button, {
+            size: "sm",
+            onClick: handleArchiveCurrentBoard,
+            title: tx(t, "archiveCurrentBoardTitle",
+              "Move the currently active board into the archive"),
+          }, tx(t, "toArchive", "ToArchive"))
+          : null,
         h(Button, {
           size: "sm",
           onClick: props.onClose,
@@ -1772,6 +1812,16 @@
                           "An active board with this slug already exists"),
                       onClick: function () { handleRestoreBoard(b.slug); },
                     }, tx(t, "restore", "Restore")),
+                    // Per-row Delete — hard-deletes this archived board
+                    // permanently (wipes its _archived/<slug>-<ts>/ dir).
+                    // Two confirms in handleHardDeleteArchivedBoard.
+                    h(Button, {
+                      size: "sm",
+                      className: "hermes-kanban-board-delete",
+                      title: tx(t, "hardDeleteArchivedTitle",
+                        "Permanently delete this archived board"),
+                      onClick: function () { handleHardDeleteArchivedBoard(b.slug); },
+                    }, tx(t, "delete", "Delete")),
                   );
                 }),
               ),
