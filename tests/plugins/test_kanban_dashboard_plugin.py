@@ -1925,3 +1925,40 @@ def test_dashboard_card_ago_renders_both_through_slash():
     # The slash is rendered unconditionally whenever enteredAgo exists,
     # not gated on bucket inequality.
     assert "if (!enteredAgo)" in js
+
+
+def test_dashboard_bundle_syntax_valid():
+    """The compiled dashboard bundle must parse as valid JavaScript.
+
+    Why: The dashboard is shipped as a hand-patched IIFE bundle (no build
+    step). A stray inline `function` declaration or missing paren breaks
+    the *entire* plugin: the browser logs `did not call register()` and
+    Kanban tab goes blank. We've shipped that bug at least once (commit
+    0ca782302 inserted a function declaration in argument position), so
+    this guard runs `node --check` on every test run.
+    What: subprocess.run(['node', '--check', bundle]) → exit 0.
+    Test: Introduce a syntax error in dist/index.js → this test fails;
+    fix it → green.
+
+    If `node` is not on PATH (rare CI image), the test skips rather than
+    fails — the syntax check is a belt-and-suspenders guard, not a hard
+    dependency.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("node not available; skipping bundle syntax check")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    result = subprocess.run(
+        ["node", "--check", str(bundle)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Bundle syntax error in {bundle}:\n"
+        f"stderr: {result.stderr}\n"
+        f"stdout: {result.stdout}"
+    )
