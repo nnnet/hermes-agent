@@ -66,6 +66,12 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.86.0"]
+# Claude Agent SDK — official Anthropic library wrapping the local Claude
+# Code CLI. Used by `provider: claude-agent-sdk` to delegate inference to
+# the host's subscription auth (reads ~/.claude/.credentials.json) without
+# an HTTP proxy in the chain. Bundles the `claude` CLI binary itself.
+# See docs/claude-agent-sdk-integration.md for the full integration plan.
+claude-agent-sdk = ["claude-agent-sdk==0.2.82"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
