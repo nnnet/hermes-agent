@@ -920,6 +920,12 @@
       return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}/archive${qs}`, {
         method: "POST",
       }).then(function (res) {
+        // Optimistic: drop the archived slug from the switcher immediately
+        // so the user never sees it after a confirmed action, even if the
+        // subsequent /boards refetch races with a stale state slot.
+        setBoardList(function (prev) {
+          return (prev || []).filter(function (b) { return b.slug !== slug; });
+        });
         loadBoardList();
         if (board === slug) switchBoard("default");
         return res;
@@ -944,6 +950,12 @@
       return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}${qs}`, {
         method: "DELETE",
       }).then(function (res) {
+        // Optimistic: drop the deleted slug from the switcher immediately
+        // (same rationale as archiveBoard — prevents a stale entry from
+        // lingering between the DELETE response and the /boards refetch).
+        setBoardList(function (prev) {
+          return (prev || []).filter(function (b) { return b.slug !== slug; });
+        });
         loadBoardList();
         if (board === slug) switchBoard("default");
         return res;
@@ -1608,42 +1620,11 @@
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        // Archive / Hard-delete buttons. Shift-click on Archive escalates
-        // to hard delete for power users; the explicit Delete button is
-        // shown alongside for discoverability. Hard-delete UX (cascade
-        // confirms) lives in confirmAndHardDelete() above the JSX return.
-        props.board !== "default"
-          ? h(Button, {
-            onClick: function (ev) {
-              const hardDelete = !!(ev && (ev.shiftKey || ev.altKey));
-              if (hardDelete) { confirmAndHardDelete(); return; }
-              const msg = tx(t, "archiveBoardConfirm",
-                "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
-                { name: currentName });
-              if (!window.confirm(msg)) return;
-              const handler = props.onArchiveBoard || props.onDeleteBoard;
-              handler(props.board).catch(function (err) {
-                // 409 with live_task_count → offer cascade. Server returns
-                // structured detail in err.body when available; fall back
-                // to a generic prompt asking the user to retry with cascade.
-                const detail = (err && err.body && err.body.detail) || {};
-                const live = detail.live_task_count;
-                if (live && live > 0) {
-                  const cmsg = tx(t, "archiveCascadeConfirm",
-                    "Board '{name}' has {n} non-archived task(s). Archive the board AND every task on it?",
-                    { name: currentName, n: String(live) });
-                  if (window.confirm(cmsg)) {
-                    handler(props.board, { cascade: true }).catch(function () {});
-                  }
-                }
-              });
-            },
-            size: "sm",
-            className: "h-8",
-            title: tx(t, "archiveBoardTitle",
-              "Archive this board (recoverable). Shift-click for hard delete (destructive)."),
-          }, tx(t, "archive", "Archive"))
-          : null,
+        // Delete button — only path to remove a non-default board from the
+        // toolbar. confirmAndHardDelete() offers a 2-step confirm with an
+        // "Archive instead" recommendation for non-empty boards, so users
+        // still reach the archive endpoint via the confirm dialog without
+        // a dedicated [Archive] toolbar action.
         props.board !== "default"
           ? h(Button, {
             onClick: confirmAndHardDelete,
