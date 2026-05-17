@@ -1569,24 +1569,15 @@
     //     intact — even an outdated UI can't wipe data without cascade.
     function confirmAndHardDelete() {
       if (!props.onHardDeleteBoard) return;
-      const targetSlug = props.board;
-      // Backend refuses hard-delete while the target board is active —
-      // switch to default first, then delete. Otherwise 409 silently
-      // swallows under the confirm dialog and user thinks nothing happened.
-      function switchThenDelete(opts) {
-        const doSwitch = (targetSlug === props.board && props.onSwitch)
-          ? Promise.resolve(props.onSwitch("default"))
-          : Promise.resolve();
-        return doSwitch.then(function () {
-          return props.onHardDeleteBoard(targetSlug, opts);
-        });
-      }
+      // Backend auto-switches to default when hard-deleting the active
+      // board; frontend's post-success switchBoard in hardDeleteBoard
+      // handles UI state. No pre-switch needed (double-switch hangs load).
       if (!currentTotal || currentTotal <= 0) {
         const msg = tx(t, "hardDeleteEmptyBoardConfirm",
           "Delete empty board '{name}'? This removes the directory permanently.",
           { name: currentName });
         if (window.confirm(msg)) {
-          switchThenDelete({ cascade: true }).catch(function () {});
+          props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
         }
         return;
       }
@@ -1598,7 +1589,7 @@
         "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
         { name: currentName, n: String(currentTotal) });
       if (!window.confirm(msg2)) return;
-      switchThenDelete({ cascade: true }).catch(function () {});
+      props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
     }
 
     return h("div", { className: "hermes-kanban-boardswitcher" },
