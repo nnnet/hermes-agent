@@ -1,6 +1,6 @@
-# Daily watchdog over prod-rebase.yml.
+# Daily watchdog over prod-sync.yml.
 #
-# If prod has been failing to rebase for >12h (= 12 hourly cycles all
+# If prod has been failing to sync for >12h (= 12 hourly cycles all
 # either skipped, failed, or conflicted), alert via Telegram so we can
 # intervene before the divergence becomes painful to reconcile.
 #
@@ -8,7 +8,7 @@
 # means at least 12h of upstream changes haven't been absorbed AND the
 # automation can't recover by itself.
 
-name: Prod rebase monitor
+name: Prod sync monitor
 
 on:
   schedule:
@@ -21,18 +21,18 @@ permissions:
 
 jobs:
   check:
-    name: Check prod-rebase health
+    name: Check prod-sync health
     runs-on: ubuntu-latest
     if: github.repository != 'NousResearch/hermes-agent'
     steps:
-      - name: Pull recent prod-rebase runs
+      - name: Pull recent prod-sync runs
         id: runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Fetch last 12 runs (≈12h at hourly cadence)
           gh -R ${{ github.repository }} run list \
-            --workflow=prod-rebase.yml \
+            --workflow=prod-sync.yml \
             --limit=12 \
             --json conclusion,startedAt \
             > /tmp/runs.json
@@ -68,7 +68,7 @@ jobs:
           CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
         run: |
           MSG=$(cat <<EOF
-          🚨 Hermes prod-rebase health alert
+          🚨 Hermes prod-sync health alert
 
           In the last 12 runs of prod-rebase:
             success:   ${{ steps.runs.outputs.success }}
@@ -82,7 +82,7 @@ jobs:
           Either no rebase has succeeded in 12h, or prod is >50 commits
           behind main. Manual reconcile recommended.
 
-          Runs: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/prod-rebase.yml
+          Runs: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/prod-sync.yml
           EOF
           )
           curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \

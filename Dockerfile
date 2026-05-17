@@ -14,8 +14,23 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini \
+    lsof && \
     rm -rf /var/lib/apt/lists/*
+# lsof needed by @browsermcp/mcp at startup (it shells out to
+# `lsof -ti:9009 | xargs kill -9` to free the port before binding its
+# WebSocket server). Without lsof the npx process crashes on launch:
+#   /bin/sh: 1: lsof: not found
+#   Failed to kill process on port 9009
+#   tools.mcp_tool: Failed to connect to MCP server 'browsermcp': CancelledError
+# Symptom is silent in main container (only "(1 failed)" in MCP registration
+# line); per-profile sub-agents accumulate noise but still run. Adding lsof
+# is the minimal fix — package is tiny (~700KB).
+
+# yt-dlp baseline install. Runtime updates land in user-area via wrapper
+# (/opt/hermes-scripts/yt-dlp-fresh.sh) using PYTHONUSERBASE=/opt/data/.python-user
+# so the wrapper can `pip install --user --upgrade yt-dlp` without root.
+RUN pip install --no-cache-dir --break-system-packages yt-dlp
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
@@ -85,7 +100,15 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk
+# `--extra hindsight` bundles `hindsight-client` (pinned in [hindsight] extra
+# of pyproject.toml) into the image venv. Without it, the memory.hindsight
+# plugin lazy-installs at first use — but the lazy path only triggers in
+# `local_embedded` mode (plugins/memory/hindsight/__init__.py guard); for
+# `local_external` mode (Hermes talking to an external Hindsight HTTP server)
+# the import fires unconditionally → ModuleNotFoundError → retain silently
+# fails and the bank stays empty. Baking the dep in makes both modes work
+# out-of-the-box and removes the per-container-restart lazy-install churn.
+RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk --extra hindsight
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
