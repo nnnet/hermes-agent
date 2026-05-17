@@ -1,0 +1,28 @@
+gateway/run.py
+  s_e5369d415d379b::t_3358a281a88218 16667-16674,16681
+  s_e5369d415d379b::t_11e3fa9cb9a1a8 14776-14779,14783-14784
+tests/gateway/test_run_cleanup_progress.py
+  s_e5369d415d379b::t_3689f8b962ff6e 332-342,344-374
+  s_e5369d415d379b::t_886f65be45fefc 343
+  s_e5369d415d379b::t_b6ceb23d856d4d 134-162
+  s_e5369d415d379b::t_4e422820042a53 186,204-212,215-216
+gateway/display_config.py
+  s_e5369d415d379b::t_c93627313b062f 203
+  s_e5369d415d379b::t_2194903cf1900e 44-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "b0af71d5582d1ca30302ca04bc30cfcf80085773",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
