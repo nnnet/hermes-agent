@@ -2038,17 +2038,12 @@ def delete_board(
         # Archive path — defer to the explicit archive endpoint logic.
         return archive_board_endpoint(slug=normed, cascade=cascade)
 
-    # Hard-delete path. Refuse if it's the active board (switch first).
+    # Hard-delete path. Auto-switch to default if it's the active board —
+    # the dashboard always intends to remove the current board, so a 409
+    # here just adds friction. We DON'T do this for the legacy archive
+    # path because archive is the recoverable action.
     if kanban_db.get_current_board() == normed:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": (
-                    f"cannot hard-delete {normed!r} while it is the active "
-                    "board — switch to another board first"
-                ),
-            },
-        )
+        kanban_db.set_current_board(kanban_db.DEFAULT_BOARD)
 
     # Non-empty board requires explicit cascade=true opt-in. The integrity
     # rule (refuse-by-default) stays intentional — accidental clicks on a
