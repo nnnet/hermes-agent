@@ -231,7 +231,12 @@ def test_hard_delete_active_board_refused(client):
 
 
 def test_hard_delete_with_archived_tasks_refused(client):
-    """Hard delete must refuse when ANY task (incl. archived) exists."""
+    """Hard delete must refuse (409) when ANY task exists and cascade is absent.
+
+    Why: Default-safety — a single misclick on Delete must not silently
+    wipe an entire board (active + archived tasks). Cascade=true is the
+    explicit opt-in (see test_hard_delete_with_cascade_destroys_everything).
+    """
     _create_board(client, "proj-a", switch=False)
     t = _create_task(client, "to archive", board="proj-a")
     # Archive the task — leaves a row with status='archived'.
@@ -245,7 +250,45 @@ def test_hard_delete_with_archived_tasks_refused(client):
     assert r.status_code == 409
     body = r.json()["detail"]
     assert body["task_count"] == 1
-    assert "empty board" in body["error"].lower()
+    # New wording points the user at the cascade opt-in.
+    assert "cascade=true" in body["error"].lower()
+
+
+def test_hard_delete_with_cascade_destroys_everything(client):
+    """Hard delete with cascade=true purges a non-empty board outright.
+
+    Why: User explicitly confirmed (via the dashboard's two-step warning)
+    that they want the board AND every task on it gone forever.
+    What: ``DELETE /boards/X?delete=true&cascade=true`` succeeds even
+    when the board has active + archived tasks. ``hard_delete_board``
+    removes the on-disk directory (and any ``_archived/<slug>-*/``),
+    so all task rows go with it.
+    Test: Create board with 1 active + 1 archived task; cascade-delete;
+    assert board dir + every archive dir for the slug are gone.
+    """
+    _create_board(client, "proj-a", switch=False)
+    _create_task(client, "active one", board="proj-a")
+    t2 = _create_task(client, "archived one", board="proj-a")
+    rp = client.patch(
+        f"/api/plugins/kanban/tasks/{t2['id']}?board=proj-a",
+        json={"status": "archived"},
+    )
+    assert rp.status_code == 200, rp.text
+
+    r = client.delete(
+        "/api/plugins/kanban/boards/proj-a?delete=true&cascade=true",
+    )
+    assert r.status_code == 200, r.text
+    res = r.json()["result"]
+    assert res["action"] == "hard-deleted"
+    for p in res["removed_paths"]:
+        assert not Path(p).exists(), f"path should be gone: {p}"
+
+    # GET /boards must NOT list 'proj-a' any more.
+    rlist = client.get("/api/plugins/kanban/boards")
+    assert rlist.status_code == 200
+    slugs = [b["slug"] for b in rlist.json()["boards"]]
+    assert "proj-a" not in slugs
 
 
 def test_hard_delete_empty_board(client):
@@ -258,6 +301,64 @@ def test_hard_delete_empty_board(client):
     assert len(res["removed_paths"]) >= 1
     for p in res["removed_paths"]:
         assert not Path(p).exists(), f"path should be gone: {p}"
+
+
+def test_list_boards_excludes_archived_after_archive(client):
+    """After archive, GET /boards (default include_archived=False) must
+    NOT return the archived slug.
+
+    Why: Regression test for the selector-shows-archived UX bug. Drives
+    the backend's filter contract that the dashboard switcher relies on.
+    What: Archive a board, GET /boards, assert the slug is not in the
+    list AND show that include_archived=true still surfaces it via
+    /boards/archived (the dedicated archive viewer endpoint).
+    Test: Create 'квантс', archive while non-current, list boards →
+    no 'квантс'. Then GET /boards/archived → 'квантс' present.
+    """
+    _create_board(client, "kvants", switch=False)
+    r = client.post("/api/plugins/kanban/boards/kvants/archive")
+    assert r.status_code == 200, r.text
+
+    rlist = client.get("/api/plugins/kanban/boards")
+    assert rlist.status_code == 200
+    body = rlist.json()
+    slugs = [b["slug"] for b in body["boards"]]
+    assert "kvants" not in slugs, (
+        f"archived 'kvants' must not appear in /boards (got {slugs})"
+    )
+    # Sanity: it's still reachable via the archive viewer.
+    rarch = client.get("/api/plugins/kanban/boards/archived")
+    arch_slugs = [b["slug"] for b in rarch.json()["archived_boards"]]
+    assert "kvants" in arch_slugs
+
+
+def test_archive_active_board_via_switch_then_archive(client):
+    """End-to-end: switch off the to-be-archived board, then archive it,
+    and verify the selector list reflects the change.
+
+    Why: Real user flow from the field — they archived the currently
+    active board (failed with 409), so the UI switches to default
+    automatically and re-issues archive.
+    Test: 'квантс' is current → archive refused (409). Switch to
+    default → archive succeeds. /boards no longer lists it; current
+    is 'default'.
+    """
+    _create_board(client, "kvants", switch=True)
+
+    # Step 1: cannot archive while active.
+    r = client.post("/api/plugins/kanban/boards/kvants/archive")
+    assert r.status_code == 409
+
+    # Step 2: switch to default, then archive cleanly.
+    rs = client.post("/api/plugins/kanban/boards/default/switch")
+    assert rs.status_code == 200, rs.text
+    r = client.post("/api/plugins/kanban/boards/kvants/archive")
+    assert r.status_code == 200, r.text
+
+    # /boards no longer surfaces 'kvants'; current is 'default'.
+    rlist = client.get("/api/plugins/kanban/boards").json()
+    assert rlist["current"] == "default"
+    assert "kvants" not in {b["slug"] for b in rlist["boards"]}
 
 
 def test_delete_default_archive_path_uses_archive(client):
