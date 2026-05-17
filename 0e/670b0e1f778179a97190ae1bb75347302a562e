@@ -1,0 +1,10 @@
+Dockerfile
+  s_e5369d415d379b::t_deb32efc178bb9 17
+  s_e5369d415d379b::t_380f1881361cb2 20-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "0e670b0e1f778179a97190ae1bb75347302a562e",
+  "prompts": {}
+}
