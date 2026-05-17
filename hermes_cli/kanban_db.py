@@ -1175,6 +1175,21 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Don't auto-resurrect a deleted board. After hard_delete_board() the
+    # board dir is gone — but stale callers (frontend with old `?board=`
+    # query, dispatcher tick with cached state, `current` pointer that
+    # wasn't cleared) would mkdir(exist_ok=True) + init schema and the
+    # board reappears. Default board is exempt — its path is the legacy
+    # root-level kanban.db, always valid.
+    if (
+        board
+        and board != DEFAULT_BOARD
+        and not path.exists()
+        and not path.parent.exists()
+    ):
+        raise FileNotFoundError(
+            f"board {board!r} does not exist on disk (deleted?)"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
