@@ -1623,20 +1623,8 @@
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        // Delete button — only path to remove a non-default board from the
-        // toolbar. confirmAndHardDelete() offers a 2-step confirm with an
-        // "Archive instead" recommendation for non-empty boards, so users
-        // still reach the archive endpoint via the confirm dialog without
-        // a dedicated [Archive] toolbar action.
-        props.board !== "default"
-          ? h(Button, {
-            onClick: confirmAndHardDelete,
-            size: "sm",
-            className: "h-8 hermes-kanban-board-delete",
-            title: tx(t, "hardDeleteBoardTitle",
-              "Permanently delete this board (and all its tasks if non-empty)"),
-          }, tx(t, "delete", "Delete"))
-          : null,
+        // Archive viewer toggle FIRST, then Delete — recoverable action
+        // listed before destructive one (user preference).
         h(Button, {
           onClick: function () { if (props.onToggleArchive) props.onToggleArchive(); },
           size: "sm",
@@ -1646,6 +1634,18 @@
         }, props.showArchive
           ? tx(t, "hideArchive", "Hide archive")
           : tx(t, "showArchive", "Archive")),
+        // Delete — only path to remove a non-default board from the toolbar.
+        // confirmAndHardDelete() offers a 2-step confirm with an "Archive
+        // instead" recommendation for non-empty boards.
+        props.board !== "default"
+          ? h(Button, {
+            onClick: confirmAndHardDelete,
+            size: "sm",
+            className: "h-8 hermes-kanban-board-delete",
+            title: tx(t, "hardDeleteBoardTitle",
+              "Permanently delete this board (and all its tasks if non-empty)"),
+          }, tx(t, "delete", "Delete"))
+          : null,
       ),
     );
   }
