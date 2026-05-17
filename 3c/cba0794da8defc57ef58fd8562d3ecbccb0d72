@@ -1,0 +1,19 @@
+agent/transports/claude_agent_sdk.py
+  s_e5369d415d379b::t_bceaf082fc1d57 1-393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "3ccba0794da8defc57ef58fd8562d3ecbccb0d72",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
