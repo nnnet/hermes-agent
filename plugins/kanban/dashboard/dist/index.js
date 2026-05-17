@@ -1548,6 +1548,35 @@
       );
     }
 
+    // Hard-delete UX (shared by shift-Archive and Delete):
+    //   * Empty board (currentTotal === 0) — single confirm, fire.
+    //   * Non-empty board — TWO confirms: first describes the consequences
+    //     and recommends Archive; second is the "absolutely sure" gate.
+    //     Only then does the call go through with cascade=true. The backend
+    //     integrity rule (refuse-by-default on non-empty boards) stays
+    //     intact — even an outdated UI can't wipe data without cascade.
+    function confirmAndHardDelete() {
+      if (!props.onHardDeleteBoard) return;
+      if (!currentTotal || currentTotal <= 0) {
+        const msg = tx(t, "hardDeleteEmptyBoardConfirm",
+          "Delete empty board '{name}'? This removes the directory permanently.",
+          { name: currentName });
+        if (window.confirm(msg)) {
+          props.onHardDeleteBoard(props.board).catch(function () {});
+        }
+        return;
+      }
+      const msg1 = tx(t, "hardDeleteNonEmptyBoardConfirm",
+        "Board '{name}' has {n} task(s). This will PERMANENTLY delete the board AND every task on it (active + archived). This cannot be undone. Consider Archive instead. Proceed with hard delete?",
+        { name: currentName, n: String(currentTotal) });
+      if (!window.confirm(msg1)) return;
+      const msg2 = tx(t, "hardDeleteNonEmptyBoardConfirm2",
+        "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
+        { name: currentName, n: String(currentTotal) });
+      if (!window.confirm(msg2)) return;
+      props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
+    }
+
     return h("div", { className: "hermes-kanban-boardswitcher" },
       h("div", { className: "hermes-kanban-boardswitcher-inner" },
         h("div", { className: "flex flex-col gap-0.5" },
@@ -1581,37 +1610,8 @@
         }, tx(t, "newBoard", "+ New board")),
         // Archive / Hard-delete buttons. Shift-click on Archive escalates
         // to hard delete for power users; the explicit Delete button is
-        // shown alongside for discoverability.
-        //
-        // Hard-delete UX (shared by shift-Archive and Delete):
-        //   * Empty board (currentTotal === 0) — single confirm, fire.
-        //   * Non-empty board — TWO confirms: first describes the
-        //     consequences and recommends Archive; second is the
-        //     "absolutely sure" gate. Only then does the call go through
-        //     with cascade=true. The backend integrity rule (refuse-by-
-        //     default on non-empty boards) stays intact — even an outdated
-        //     UI can't wipe data without explicit cascade.
-        function confirmAndHardDelete() {
-          if (!props.onHardDeleteBoard) return;
-          if (!currentTotal || currentTotal <= 0) {
-            const msg = tx(t, "hardDeleteEmptyBoardConfirm",
-              "Delete empty board '{name}'? This removes the directory permanently.",
-              { name: currentName });
-            if (window.confirm(msg)) {
-              props.onHardDeleteBoard(props.board).catch(function () {});
-            }
-            return;
-          }
-          const msg1 = tx(t, "hardDeleteNonEmptyBoardConfirm",
-            "Board '{name}' has {n} task(s). This will PERMANENTLY delete the board AND every task on it (active + archived). This cannot be undone. Consider Archive instead. Proceed with hard delete?",
-            { name: currentName, n: String(currentTotal) });
-          if (!window.confirm(msg1)) return;
-          const msg2 = tx(t, "hardDeleteNonEmptyBoardConfirm2",
-            "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
-            { name: currentName, n: String(currentTotal) });
-          if (!window.confirm(msg2)) return;
-          props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
-        }
+        // shown alongside for discoverability. Hard-delete UX (cascade
+        // confirms) lives in confirmAndHardDelete() above the JSX return.
         props.board !== "default"
           ? h(Button, {
             onClick: function (ev) {
