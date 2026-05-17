@@ -1794,3 +1794,60 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_archive_viewer_button_label_distinct_from_action():
+    """The top-bar Archive viewer toggle must NOT collide with the Archive
+    action button on non-default boards.
+
+    Why: Two buttons literally labeled "Archive" sit side-by-side in the
+    toolbar — one archives the current board, the other toggles the
+    archived-items viewer panel. PR #6 (kanban-board-archive-ui) shipped
+    both with the same label, which confused operators. The viewer
+    toggle is renamed to "Archives" (plural) so the two roles are
+    visually distinct.
+    What: Asserts the viewer toggle's English fallback string is
+    "Archives", and the action button still says "Archive".
+    Test: Run pytest on this file; both literal substrings must appear
+    in the bundle exactly once each in the toolbar context.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Action button: archives the current board (default fallback "Archive").
+    assert 'tx(t, "archive", "Archive")' in js
+    # Viewer toggle: now "Archives" (plural) so the two buttons differ.
+    assert 'tx(t, "showArchive", "Archives")' in js
+    # Make sure the old colliding label is gone from the viewer toggle.
+    assert 'tx(t, "showArchive", "Archive")' not in js
+
+
+def test_dashboard_card_ago_collapses_duplicate_bucket():
+    """Card meta row must hide the redundant "/ second timeAgo" when both
+    timeAgo() calls collapse to the same coarse bucket.
+
+    Why: ``feat/kanban-card-stage-entered-time`` renders
+    ``timeAgo(created_at) / timeAgo(entered_status_at)`` to surface the
+    in-stage age. But timeAgo() buckets to "Xm/Xh/Xd ago", so a task
+    created and promoted within the same hour produces identical strings
+    (e.g. "1h ago / 1h ago"). The duplicate carries no info and reads
+    visually as a single value with stray punctuation. Suppress it.
+    What: Asserts the bundle's render path computes both strings, then
+    only joins them with " / " when ``enteredAgo !== createdAgo``.
+    Test: Run pytest on this file; the substring checks below all
+    appear in the bundle exactly as written. If a future refactor
+    inlines the conditional, update these substrings to match.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Both timestamps are computed locally so we can compare buckets.
+    assert "const createdAgo = timeAgo ? timeAgo(t.created_at)" in js
+    assert "timeAgo(t.entered_status_at)" in js
+    # The slash is only rendered when the second bucket differs.
+    assert '(enteredAgo && enteredAgo !== createdAgo)' in js
+    assert '`${createdAgo} / ${enteredAgo}`' in js
