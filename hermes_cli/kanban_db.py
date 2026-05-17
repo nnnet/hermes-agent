@@ -404,11 +404,19 @@ def write_board_metadata(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     archived: Optional[bool] = None,
+    meta_extra: Optional[dict] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
     Preserves any existing fields not mentioned in the call. Sets
     ``created_at`` on first write. Returns the resulting metadata dict.
+
+    ``meta_extra`` is a free-form dict whose keys are merged into the
+    metadata file alongside the known fields. Used by feature layers
+    (e.g. ``tools/chief_tools.py``) to attach domain metadata like
+    ``kind``, ``lifetime``, ``parent_chief_id`` without requiring a
+    schema migration. Keys colliding with reserved names (``slug``,
+    ``db_path``) are dropped silently to prevent corruption.
     """
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     meta = read_board_metadata(slug)
@@ -425,6 +433,14 @@ def write_board_metadata(
         meta["color"] = str(color)
     if archived is not None:
         meta["archived"] = bool(archived)
+    if meta_extra:
+        # Reserved keys: slug is rebound from filesystem on read; db_path is
+        # derived. Letting callers overwrite them would corrupt list_boards().
+        _RESERVED = {"slug", "db_path"}
+        for k, v in meta_extra.items():
+            if k in _RESERVED:
+                continue
+            meta[k] = v
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -444,12 +460,16 @@ def create_board(
     description: Optional[str] = None,
     icon: Optional[str] = None,
     color: Optional[str] = None,
+    meta_extra: Optional[dict] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
     Returns the resulting metadata. Raises :class:`ValueError` for a
     malformed slug; returns the existing metadata (not an error) if the
     board already exists — matching ``mkdir -p`` semantics.
+
+    ``meta_extra`` — forward to :func:`write_board_metadata` for attaching
+    domain metadata (e.g. chief lifecycle fields).
     """
     normed = _normalize_board_slug(slug)
     if not normed:
@@ -460,6 +480,7 @@ def create_board(
         description=description,
         icon=icon,
         color=color,
+        meta_extra=meta_extra,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
