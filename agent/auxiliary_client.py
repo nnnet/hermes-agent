@@ -1262,6 +1262,30 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     return api_key, base_url
 
 
+def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
+    """Resolve a fresh xAI OAuth (api_key, base_url) for auxiliary clients.
+
+    Routes through ``hermes_cli.auth``'s runtime resolver so the auto-refresh
+    path is shared with the main agent, instead of relying on whatever raw
+    tokens happen to be sitting in auth.json or the credential pool.  Returns
+    ``None`` if the user is not authenticated with xAI Grok OAuth (so
+    ``_resolve_auto`` Step 1 falls through to the next provider in the chain).
+    """
+    try:
+        from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+        creds = resolve_xai_oauth_runtime_credentials()
+    except Exception as exc:
+        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
+        return None
+
+    api_key = str(creds.get("api_key") or "").strip()
+    base_url = str(creds.get("base_url") or "").strip().rstrip("/")
+    if not api_key or not base_url:
+        return None
+    return api_key, base_url
+
+
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
 
@@ -1464,8 +1488,21 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
+        logger.warning(
+            "Auxiliary Nous client unavailable: no Nous authentication found "
+            "(run: hermes auth)."
+        )
         _mark_provider_unhealthy("nous", ttl=60)
         return None, None
+    if runtime is None and nous:
+        # Runtime credential mint failed but stored Nous auth is still present.
+        # Falls back to the raw stored token below; surface a debug line so
+        # operators investigating expired/invalid sessions have a breadcrumb,
+        # without blocking the fallback path the rest of this function relies on.
+        logger.debug(
+            "Auxiliary Nous: runtime credential mint failed; falling back to "
+            "stored auth.json token."
+        )
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
@@ -1737,6 +1774,32 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         _fallback_client, model, custom_key, custom_base, custom_mode,
     )
     return _fallback_client, model
+
+
+def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a CodexAuxiliaryClient for an xAI Grok OAuth-authenticated session.
+
+    xAI's ``/v1/responses`` endpoint speaks the OpenAI Responses API, so we
+    wrap a plain ``OpenAI`` client in ``CodexAuxiliaryClient`` to translate
+    ``chat.completions.create()`` calls into ``responses.stream()`` requests.
+
+    The caller must pass an explicit model — pinning a default for Grok
+    would silently rot when xAI's allowlist drifts.  Returns ``(None, None)``
+    when the user has not authenticated with xAI Grok OAuth.
+    """
+    if not model:
+        logger.warning(
+            "Auxiliary client: xai-oauth requested without a model; "
+            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
+        )
+        return None, None
+    resolved = _resolve_xai_oauth_for_aux()
+    if resolved is None:
+        return None, None
+    api_key, base_url = resolved
+    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
+    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    return CodexAuxiliaryClient(real_client, model), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -2846,6 +2909,26 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── xAI Grok OAuth (loopback PKCE → Responses API) ───────────────
+    # Without this branch, an xai-oauth main provider falls through to the
+    # generic ``oauth_external`` arm below and returns ``(None, None)``,
+    # silently re-routing every auxiliary task (compression, web extract,
+    # session search, curator, etc.) to whatever Step-2 fallback the user
+    # has configured.  Users on xAI Grok OAuth would then see surprise
+    # OpenRouter / Nous bills for side tasks they thought were running on
+    # their xAI subscription.
+    if provider == "xai-oauth":
+        client, default = _build_xai_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: xai-oauth requested but no xAI "
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok Subscription)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
@@ -3196,6 +3279,8 @@ def resolve_provider_client(
             return resolve_provider_client("nous", model, async_mode)
         if provider == "openai-codex":
             return resolve_provider_client("openai-codex", model, async_mode)
+        if provider == "xai-oauth":
+            return resolve_provider_client("xai-oauth", model, async_mode)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

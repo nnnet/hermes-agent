@@ -1452,6 +1452,17 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_proxy(args):
+    """Local OpenAI-compatible proxy to OAuth providers."""
+    # Lazy import — pulls in aiohttp, which is gated behind an extras install
+    # for users who don't run the proxy or the messaging gateway.
+    from hermes_cli.proxy.cli import cmd_proxy as _cmd_proxy
+
+    rc = _cmd_proxy(args)
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -1921,6 +1932,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "xai-oauth":
+        _model_flow_xai_oauth(config, current_model)
     elif selected_provider == "qwen-oauth":
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "minimax-oauth":
@@ -2798,6 +2811,87 @@ def _model_flow_openai_codex(config, current_model=""):
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+    else:
+        print("No change.")
+
+
+def _model_flow_xai_oauth(_config, current_model=""):
+    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    from hermes_cli.auth import (
+        get_xai_oauth_auth_status,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        resolve_xai_oauth_runtime_credentials,
+        _login_xai_oauth,
+        DEFAULT_XAI_OAUTH_BASE_URL,
+        PROVIDER_REGISTRY,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    status = get_xai_oauth_auth_status()
+    if status.get("logged_in"):
+        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Reauthenticate (new OAuth login)")
+        print("    3. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            print("Starting a fresh xAI OAuth login...")
+            print()
+            try:
+                mock_args = argparse.Namespace()
+                _login_xai_oauth(
+                    mock_args,
+                    PROVIDER_REGISTRY["xai-oauth"],
+                    force_new_login=True,
+                )
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        elif choice == "3":
+            return
+    else:
+        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print()
+        try:
+            mock_args = argparse.Namespace()
+            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+
+    # Resolve a usable base URL.  ``resolve_xai_oauth_runtime_credentials``
+    # only reads from the auth.json singleton — but credentials may legitimately
+    # live only in the pool (e.g. after ``hermes auth add xai-oauth``).  Fall
+    # back to the default base URL in that case so the model picker still
+    # completes successfully instead of bailing out with
+    # ``Could not resolve xAI OAuth credentials``.
+    base_url = DEFAULT_XAI_OAUTH_BASE_URL
+    try:
+        creds = resolve_xai_oauth_runtime_credentials()
+        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
+    except Exception:
+        pass
+
+    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("xai-oauth", base_url)
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
     else:
         print("No change.")
 
@@ -5670,21 +5764,50 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not _web_ui_build_needed(web_dir):
         return True
 
+    # Console-encoding-safe print: Windows consoles default to cp1252
+    # (or similar) and will raise UnicodeEncodeError on arrow / check
+    # glyphs unless PYTHONIOENCODING=utf-8 is set. Routing every print
+    # in this function through _say() with errors="replace" keeps the
+    # build path usable on a stock `py -m hermes_cli.main web` invocation.
+    def _say(text: str) -> None:
+        try:
+            print(text)
+        except UnicodeEncodeError:
+            encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
     npm = shutil.which("npm")
     if not npm:
         if fatal:
-            print("Web UI frontend not built and npm is not available.")
-            print("Install Node.js, then run:  cd web && npm install && npm run build")
+            _say("Web UI frontend not built and npm is not available.")
+            _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
-    print("→ Building web UI...")
+    _say("→ Building web UI...")
+
+    def _relay(result: "subprocess.CompletedProcess") -> None:
+        """Print captured npm output so users can see *why* a step failed.
+
+        Windows users hitting `rm -rf` / `cp -r` errors (or any other
+        sync-assets / Vite failure) would otherwise see only ``Web UI
+        build failed`` with no hint of the underlying cause, because
+        the npm calls run with ``capture_output=True``.
+        """
+        for blob in (result.stdout, result.stderr):
+            if not blob:
+                continue
+            text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
+            if text:
+                _say(text)
+
     r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
     if r1.returncode != 0:
-        print(
+        _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
+        _relay(r1)
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  cd web && npm install && npm run build")
         return False
     # First attempt
     r2 = subprocess.run(
@@ -5719,21 +5842,20 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         # A stale UI is far better than no UI for non-interactive callers
         # (Windows Scheduled Tasks, CI) — issue #23817.
         if dist_index.exists():
-            print("  ⚠ Web UI build failed — serving stale dist as fallback")
+            _say("  ⚠ Web UI build failed — serving stale dist as fallback")
             if stderr_tail:
-                print(f"  Build error:\n  {stderr_tail}")
+                _say(f"  Build error:\n  {stderr_tail}")
             return True
 
-        print(
+        _say(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
-        if stderr_tail:
-            print(f"  Build error:\n  {stderr_tail}")
+        _relay(r2)
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  cd web && npm install && npm run build")
         return False
-    print("  ✓ Web UI built")
+    _say("  ✓ Web UI built")
     return True
 
 
@@ -9361,7 +9483,7 @@ def _build_provider_choices() -> list[str]:
     except Exception:
         # Fallback: static list guarantees the CLI always works
         return [
-            "auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot",
+            "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
             "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
@@ -9385,7 +9507,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "profile", "sessions", "setup",
+        "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -9727,6 +9849,51 @@ def main():
         help="Skip the confirmation prompt",
     )
 
+    # =========================================================================
+    # proxy command — local OpenAI-compatible proxy that attaches the user's
+    # OAuth-authenticated provider credentials to outbound requests. Lets
+    # external apps (OpenViking, Karakeep, Open WebUI, ...) ride a logged-in
+    # subscription without copy-pasting static API keys.
+    # =========================================================================
+    proxy_parser = subparsers.add_parser(
+        "proxy",
+        help="Local OpenAI-compatible proxy to OAuth providers",
+        description=(
+            "Run a local HTTP server that forwards OpenAI-compatible requests "
+            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
+            "apps can point at the proxy with any bearer token; the proxy "
+            "attaches your real credentials."
+        ),
+    )
+    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
+
+    proxy_start = proxy_subparsers.add_parser(
+        "start", help="Run the proxy in the foreground"
+    )
+    proxy_start.add_argument(
+        "--provider",
+        default="nous",
+        help="Upstream provider (default: nous). See `hermes proxy providers`.",
+    )
+    proxy_start.add_argument(
+        "--host",
+        default=None,
+        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
+    )
+    proxy_start.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port (default: 8645)",
+    )
+
+    proxy_subparsers.add_parser(
+        "status", help="Show which proxy upstreams are ready"
+    )
+    proxy_subparsers.add_parser(
+        "providers", help="List available proxy upstream providers"
+    )
+    proxy_parser.set_defaults(func=cmd_proxy)
     gateway_parser.set_defaults(func=cmd_gateway)
 
     # =========================================================================
@@ -9847,7 +10014,7 @@ def main():
     )
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=["nous", "openai-codex", "xai-oauth"],
         default=None,
         help="Provider to authenticate with (default: nous)",
     )
@@ -9893,7 +10060,7 @@ def main():
     )
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex", "spotify"],
+        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
         default=None,
         help="Provider to log out from (default: active provider)",
     )
@@ -11615,16 +11782,57 @@ Examples:
         description="Start Hermes Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
     )
     _add_accept_hooks_flag(acp_parser)
+    acp_parser.add_argument(
+        "--version",
+        action="store_true",
+        dest="acp_version",
+        help="Print Hermes ACP version and exit",
+    )
+    acp_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify ACP dependencies and adapter imports, then exit",
+    )
+    acp_parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Run interactive Hermes provider/model setup for ACP terminal auth",
+    )
+    acp_parser.add_argument(
+        "--setup-browser",
+        action="store_true",
+        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+             "for browser tool support (idempotent).",
+    )
+    acp_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        dest="assume_yes",
+        help="Accept all prompts (used by --setup-browser to skip the "
+             "~400 MB Chromium download confirmation).",
+    )
 
     def cmd_acp(args):
         """Launch Hermes Agent as an ACP server."""
         try:
             from acp_adapter.entry import main as acp_main
 
-            acp_main()
+            acp_argv = []
+            if getattr(args, "acp_version", False):
+                acp_argv.append("--version")
+            if getattr(args, "check", False):
+                acp_argv.append("--check")
+            if getattr(args, "setup", False):
+                acp_argv.append("--setup")
+            if getattr(args, "setup_browser", False):
+                acp_argv.append("--setup-browser")
+            if getattr(args, "assume_yes", False):
+                acp_argv.append("--yes")
+            acp_main(acp_argv)
         except ImportError:
-            print("ACP dependencies not installed.")
-            print("Install them with:  pip install -e '.[acp]'")
+            print("ACP dependencies not installed.", file=sys.stderr)
+            print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)

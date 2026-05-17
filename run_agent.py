@@ -1275,7 +1275,7 @@ class AIAgent:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
-        elif self.provider == "xai":
+        elif self.provider in {"xai", "xai-oauth"}:
             self.api_mode = "codex_responses"
         elif (provider_name is None) and (
             self._base_url_hostname == "chatgpt.com"
@@ -4320,6 +4320,7 @@ class AIAgent:
             except Exception:
                 pass
             review_agent = None
+            review_messages = []
             try:
                 with open(os.devnull, "w", encoding="utf-8") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
@@ -4437,6 +4438,7 @@ class AIAgent:
                         review_agent.close()
                     except Exception:
                         pass
+                    review_messages = list(getattr(review_agent, "_session_messages", []))
                     review_agent = None
 
                 # Scan the review agent's messages for successful tool actions
@@ -4446,7 +4448,7 @@ class AIAgent:
                 # re-surface stale "created"/"updated" messages from the prior
                 # conversation as if they just happened (issue #14944).
                 actions = self._summarize_background_review_actions(
-                    getattr(review_agent, "_session_messages", []),
+                    review_messages,
                     messages_snapshot,
                 )
 
@@ -7189,15 +7191,60 @@ class AIAgent:
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
+            return False
+
+        # Guard against silent account swap.
+        #
+        # When an agent is using a non-singleton credential — e.g. a manual
+        # pool entry (``hermes auth add xai-oauth``) whose tokens belong to
+        # a different account than the loopback_pkce singleton, or an agent
+        # constructed with an explicit ``api_key=`` arg — force-refreshing
+        # the singleton here and adopting its tokens silently re-routes the
+        # rest of the conversation onto the singleton's account.  The
+        # credential pool's reactive recovery (``_recover_with_credential_pool``)
+        # is the right channel for that case; this path is the
+        # singleton-only fallback used when the pool can't recover, and
+        # MUST only fire when the agent really is on singleton tokens.
+        try:
+            if self.provider == "openai-codex":
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+
+                singleton_now = resolve_codex_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+            else:
+                from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                singleton_now = resolve_xai_oauth_runtime_credentials(
+                    refresh_if_expiring=False,
+                )
+        except Exception as exc:
+            logger.debug("%s singleton read failed: %s", self.provider, exc)
+            return False
+
+        singleton_key = str(singleton_now.get("api_key") or "").strip()
+        active_key = str(self.api_key or "").strip()
+        if singleton_key and active_key and singleton_key != active_key:
+            logger.debug(
+                "%s singleton tokens differ from the active api_key; "
+                "skipping singleton force-refresh to avoid silent account swap. "
+                "Reactive credential rotation should go through the pool.",
+                self.provider,
+            )
             return False
 
         try:
-            from hermes_cli.auth import resolve_codex_runtime_credentials
+            if self.provider == "openai-codex":
+                from hermes_cli.auth import resolve_codex_runtime_credentials
 
-            creds = resolve_codex_runtime_credentials(force_refresh=force)
+                creds = resolve_codex_runtime_credentials(force_refresh=force)
+            else:
+                from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+                creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
         except Exception as exc:
-            logger.debug("Codex credential refresh failed: %s", exc)
+            logger.debug("%s credential refresh failed: %s", self.provider, exc)
             return False
 
         api_key = creds.get("api_key")
@@ -7212,7 +7259,7 @@ class AIAgent:
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 
-        if not self._replace_primary_openai_client(reason="codex_credential_refresh"):
+        if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False
 
         return True
@@ -9483,6 +9530,46 @@ class AIAgent:
             )
         return transformed
 
+    def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
+        """Return the tool message content that is safe for the active model.
+
+        Multimodal tool results normally unwrap to OpenAI-style content parts so
+        vision-capable models can inspect screenshots.  Text-only providers must
+        not receive those image parts, because a rejected tool result becomes
+        part of the canonical history and can make the next user turn fail before
+        the agent has a chance to recover.
+        """
+        if not _is_multimodal_tool_result(result):
+            return result
+
+        content = result.get("content") or []
+        if not self._content_has_image_parts(content):
+            return content
+
+        if self._model_supports_vision():
+            return content
+
+        summary = _multimodal_text_summary(result)
+        if tool_name == "computer_use":
+            return json.dumps({
+                "error": (
+                    "computer_use returned screenshot/image content, but the active "
+                    "model/provider does not support image input. Switch to a "
+                    "vision-capable model for desktop computer use, or use browser "
+                    "tools for browser tasks."
+                ),
+                "text_summary": summary,
+            })
+
+        logger.warning(
+            "Tool %s returned image content for non-vision model %s/%s; "
+            "falling back to text summary",
+            tool_name,
+            self.provider,
+            self.model,
+        )
+        return summary
+
     def _try_shrink_image_parts_in_messages(self, api_messages: list) -> bool:
         """Re-encode all native image parts at a smaller size to recover from
         image-too-large errors (Anthropic 5 MB, unknown other providers).
@@ -9766,7 +9853,7 @@ class AIAgent:
                     and "/backend-api/codex" in self._base_url_lower
                 )
             )
-            is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
+            is_xai_responses = self.provider in {"xai", "xai-oauth"} or self._base_url_hostname == "api.x.ai"
             _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
             return _ct.build_kwargs(
                 model=self.model,
@@ -11273,14 +11360,10 @@ class AIAgent:
             # rather than a raw Python dict.  The Anthropic adapter already
             # accepts content lists; vision-capable OpenAI-compatible servers
             # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers that reject images are handled by the adaptive
-            # _vision_supported recovery in the API retry loop.
+            # Text-only servers get a string-safe fallback here so a rejected
+            # image tool result never poisons canonical session history.
             # String results pass through unchanged.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            _tool_content = self._tool_result_content_for_active_model(name, function_result)
             tool_msg = {
                 "role": "tool",
                 "name": name,
@@ -11695,11 +11778,7 @@ class AIAgent:
 
             # Unwrap _multimodal dicts to an OpenAI-style content list
             # (see parallel path for rationale). String results pass through.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
+            _tool_content = self._tool_result_content_for_active_model(function_name, function_result)
             tool_msg = {
                 "role": "tool",
                 "name": function_name,
@@ -12350,7 +12429,7 @@ class AIAgent:
         codex_ack_continuations = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
-        truncated_response_prefix = ""
+        truncated_response_parts: List[str] = []
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -12811,16 +12890,30 @@ class AIAgent:
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        request_messages = api_kwargs.get("messages")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_kwargs.get("input")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_messages
+                        # Shallow-copy the outer list so plugins that retain the
+                        # reference for async snapshotting don't observe later
+                        # mutations of api_messages.  The inner dicts are not
+                        # mutated by the agent loop, so a shallow copy is
+                        # sufficient; a deepcopy would walk every tool result
+                        # and base64 image on every API call.
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
                             platform=self.platform or "",
                             model=self.model,
                             provider=self.provider,
                             base_url=self.base_url,
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
+                            request_messages=list(request_messages) if isinstance(request_messages, list) else [],
                             message_count=len(api_messages),
                             tool_count=len(self.tools or []),
                             approx_input_tokens=approx_tokens,
@@ -13266,7 +13359,7 @@ class AIAgent:
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                                 messages.append(interim_msg)
                                 if assistant_message.content:
-                                    truncated_response_prefix += assistant_message.content
+                                    truncated_response_parts.append(assistant_message.content)
 
                                 if length_continue_retries < 3:
                                     self._vprint(
@@ -13287,7 +13380,7 @@ class AIAgent:
                                     restart_with_length_continuation = True
                                     break
 
-                                partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                                partial_response = self._strip_think_blocks("".join(truncated_response_parts)).strip()
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
@@ -13735,6 +13828,11 @@ class AIAgent:
                         # we don't false-trip on other URL validation
                         # errors. (issue #23570)
                         "image_url'. expected",
+                        # DeepSeek's OpenAI-compatible API reports text-only
+                        # request-body variants as:
+                        # "unknown variant `image_url`, expected `text`".
+                        "unknown variant `image_url`, expected `text`",
+                        "unknown variant image_url, expected text",
                     )
                     _err_lower = _err_body.lower()
                     _looks_like_image_rejection = any(
@@ -13847,13 +13945,14 @@ class AIAgent:
 
                     if (
                         self.api_mode == "codex_responses"
-                        and self.provider == "openai-codex"
+                        and self.provider in {"openai-codex", "xai-oauth"}
                         and status_code == 401
                         and not codex_auth_retry_attempted
                     ):
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
-                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            _label = "xAI OAuth" if self.provider == "xai-oauth" else "Codex"
+                            self._vprint(f"{self.log_prefix}🔐 {_label} auth refreshed after 401. Retrying request...")
                             continue
                     if (
                         self.api_mode == "chat_completions"
@@ -14493,11 +14592,15 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
                         if classified.is_auth or classified.reason == FailoverReason.billing:
-                            if _provider == "openai-codex" and status_code == 401:
-                                self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
-                                self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
-                                self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
-                                self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                            if _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
+                                if _provider == "openai-codex":
+                                    self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
+                                    self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
+                                    self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
+                                    self._vprint(f"{self.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
+                                else:
+                                    self._vprint(f"{self.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
+                                    self._vprint(f"{self.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok Subscription) from `hermes model`.", force=True)
                             else:
                                 self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                                 self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
@@ -14743,7 +14846,9 @@ class AIAgent:
                         finish_reason=finish_reason,
                         message_count=len(api_messages),
                         response_model=getattr(response, "model", None),
+                        response=response,
                         usage=self._usage_summary_for_api_request_hook(response),
+                        assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )
@@ -15486,9 +15591,9 @@ class AIAgent:
 
                     codex_ack_continuations = 0
 
-                    if truncated_response_prefix:
-                        final_response = truncated_response_prefix + final_response
-                        truncated_response_prefix = ""
+                    if truncated_response_parts:
+                        final_response = "".join(truncated_response_parts) + final_response
+                        truncated_response_parts = []
                         length_continue_retries = 0
                     
                     final_response = self._strip_think_blocks(final_response).strip()
