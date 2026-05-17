@@ -297,6 +297,8 @@
 }
 .hermes-kanban-ago {
   margin-left: auto;
+  font-size: 0.85em;
+  white-space: nowrap;
 }
 
 /* ---- Inline create --------------------------------------------------- */

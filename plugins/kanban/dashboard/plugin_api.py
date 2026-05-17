@@ -137,10 +137,121 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+# Map current task.status → task_events.kind that records the most recent
+# transition INTO that status. Used by ``_compute_entered_status_at`` to
+# answer "when did this card enter its current column?" without adding a
+# new ``status_changed_at`` column on the tasks table.
+#
+# ``todo`` is intentionally absent: a fresh task starts in ``todo`` with no
+# dedicated entry event (``created_at`` is the natural fallback). Tasks
+# rolled back to ``todo`` from ready (``claim_rejected``) or from archived
+# (``restored``) get their entered-stage timestamp from those events instead.
+_STATUS_TO_ENTRY_EVENT: dict[str, tuple[str, ...]] = {
+    "ready":    ("promoted",),
+    "running":  ("claimed",),
+    "done":     ("completed",),
+    "blocked":  ("blocked",),
+    "archived": ("archived",),
+    "todo":     ("restored", "claim_rejected"),
+    # "triage" — no dedicated event; falls back to created_at.
+}
+
+
+def _entered_status_at_for_task(
+    conn: sqlite3.Connection, task_id: str, status: str, created_at: int,
+) -> int:
+    """Return the timestamp when ``task_id`` entered its current ``status``.
+
+    Why: Dashboard cards need a per-stage timestamp distinct from
+    ``created_at`` so operators can spot tasks stuck in ``running`` /
+    ``blocked`` independently of how old the ticket is.
+    What: Looks up the latest ``task_events.created_at`` whose ``kind``
+    matches the status's entry event; falls back to ``created_at`` when
+    no such event exists (e.g. fresh ``todo`` tasks, or ``triage``).
+    Test: Promote a task to ready, expect entered_status_at == promoted
+    event timestamp; claim it, expect entered_status_at == claimed
+    timestamp (NOT promoted).
+    """
+    kinds = _STATUS_TO_ENTRY_EVENT.get(status)
+    if not kinds:
+        return created_at
+    placeholders = ",".join("?" for _ in kinds)
+    row = conn.execute(
+        f"SELECT MAX(created_at) AS ts FROM task_events "
+        f"WHERE task_id = ? AND kind IN ({placeholders})",
+        (task_id, *kinds),
+    ).fetchone()
+    ts = row["ts"] if row else None
+    return int(ts) if ts is not None else int(created_at)
+
+
+def _batch_entered_status_at(
+    conn: sqlite3.Connection, tasks: list[kanban_db.Task],
+) -> dict[str, int]:
+    """Batch version of :func:`_entered_status_at_for_task` for list endpoints.
+
+    Why: ``GET /board`` serializes hundreds of tasks; calling the
+    per-task helper would be N+1 against ``task_events``. One grouped
+    aggregate query keeps the cost flat regardless of board size.
+    What: For each task, picks MAX(created_at) over the events matching
+    its status's entry kinds. Falls back to ``task.created_at`` when no
+    matching event exists.
+    Test: Build a board with 3 tasks in ready/running/done, call this,
+    assert each maps to its own status's event timestamp.
+    """
+    if not tasks:
+        return {}
+    # Collect every (task_id, kind) pair we care about so the WHERE clause
+    # filters tightly. We don't pre-filter by status because a task that
+    # just transitioned still has older events of the previous kinds —
+    # filtering on the *current* status's kinds is what gives us the
+    # "entered this column" semantics.
+    interest: dict[str, tuple[str, ...]] = {}
+    for t in tasks:
+        kinds = _STATUS_TO_ENTRY_EVENT.get(t.status)
+        if kinds:
+            interest[t.id] = kinds
+
+    out: dict[str, int] = {t.id: int(t.created_at) for t in tasks}
+    if not interest:
+        return out
+
+    # Build one IN-clause over the union of all kinds we need so we can
+    # do a single scan, then filter per-task client-side. This is cheaper
+    # than one query per task even for boards in the thousands.
+    all_kinds = sorted({k for ks in interest.values() for k in ks})
+    all_ids = list(interest.keys())
+    id_ph = ",".join("?" for _ in all_ids)
+    kind_ph = ",".join("?" for _ in all_kinds)
+    rows = conn.execute(
+        f"SELECT task_id, kind, MAX(created_at) AS ts "
+        f"FROM task_events "
+        f"WHERE task_id IN ({id_ph}) AND kind IN ({kind_ph}) "
+        f"GROUP BY task_id, kind",
+        (*all_ids, *all_kinds),
+    ).fetchall()
+    per_task_max: dict[str, int] = {}
+    for r in rows:
+        tid = r["task_id"]
+        kind = r["kind"]
+        # Skip rows whose kind isn't in *this* task's interest set
+        # (we widened the IN-clause for batch efficiency above).
+        if kind not in interest.get(tid, ()):
+            continue
+        ts = int(r["ts"])
+        cur = per_task_max.get(tid)
+        if cur is None or ts > cur:
+            per_task_max[tid] = ts
+    for tid, ts in per_task_max.items():
+        out[tid] = ts
+    return out
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    entered_status_at: Optional[int] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
@@ -149,6 +260,23 @@ def _task_dict(
         d["age"] = kanban_db.task_age(task)
     except Exception:
         d["age"] = {"created_age_seconds": None, "started_age_seconds": None, "time_to_complete_seconds": None}
+    # Per-stage timestamp: when did this card enter its current column?
+    # ``entered_status_at`` is precomputed by the batch helper on list
+    # endpoints; falls back to ``None`` here (single-task callers can
+    # compute it themselves via /tasks/:id below).
+    d["entered_status_at"] = entered_status_at
+    # Derived age in seconds for the current stage, alongside the
+    # existing created/started/complete ages. ``None`` when we don't
+    # have entered_status_at yet (caller didn't pass it).
+    if entered_status_at is not None:
+        try:
+            age_block = d.get("age") or {}
+            age_block["entered_status_age_seconds"] = max(
+                0, int(time.time()) - int(entered_status_at)
+            )
+            d["age"] = age_block
+        except Exception:
+            pass
     # Surface the latest non-null run summary so dashboards don't show
     # blank cards/drawers for tasks where the worker handed off via
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
@@ -411,13 +539,19 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        # Batch-fetch entered-status timestamps in one aggregate query.
+        entered_at_map = _batch_entered_status_at(conn, tasks)
 
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                entered_status_at=entered_at_map.get(t.id),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -503,8 +637,9 @@ def list_archived_tasks(
         conn = kanban_db.connect(board=slug)
         try:
             tasks = kanban_db.list_tasks(conn, include_archived=True, status="archived")
+            entered_at_map = _batch_entered_status_at(conn, tasks)
             for t in tasks:
-                d = _task_dict(t)
+                d = _task_dict(t, entered_status_at=entered_at_map.get(t.id))
                 d["board_slug"] = slug
                 out.append(d)
         except Exception as exc:
@@ -530,7 +665,12 @@ def get_task(task_id: str, board: Optional[str] = Query(None)):
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        entered_at = _entered_status_at_for_task(
+            conn, task.id, task.status, task.created_at,
+        )
+        task_d = _task_dict(
+            task, latest_summary=full_summary, entered_status_at=entered_at,
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -590,7 +730,15 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
         )
         task = kanban_db.get_task(conn, task_id)
-        body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        if task is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, task.id, task.status, task.created_at,
+            )
+            body: dict[str, Any] = {
+                "task": _task_dict(task, entered_status_at=entered_at),
+            }
+        else:
+            body = {"task": None}
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -726,7 +874,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
 
         updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+        if updated is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, updated.id, updated.status, updated.created_at,
+            )
+            return {
+                "task": _task_dict(updated, entered_status_at=entered_at),
+            }
+        return {"task": None}
     finally:
         conn.close()
 
@@ -1952,7 +2107,15 @@ def restore_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
                 detail={"error": f"failed to restore task {task_id}"},
             )
         updated = kanban_db.get_task(conn, task_id)
-        return {"ok": True, "task": _task_dict(updated) if updated else None}
+        if updated is not None:
+            entered_at = _entered_status_at_for_task(
+                conn, updated.id, updated.status, updated.created_at,
+            )
+            return {
+                "ok": True,
+                "task": _task_dict(updated, entered_status_at=entered_at),
+            }
+        return {"ok": True, "task": None}
     finally:
         conn.close()
 

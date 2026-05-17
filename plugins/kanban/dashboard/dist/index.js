@@ -2625,8 +2625,12 @@
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
             h("span", { className: "hermes-kanban-ago",
-                        title: t.created_at ? `Created ${t.created_at}` : "" },
-              timeAgo ? timeAgo(t.created_at) : ""),
+                        title: t.entered_status_at && t.entered_status_at !== t.created_at
+                          ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
+                          : (t.created_at ? `Created ${t.created_at}` : "") },
+              t.entered_status_at && t.entered_status_at !== t.created_at && timeAgo
+                ? `${timeAgo(t.created_at)} / ${timeAgo(t.entered_status_at)}`
+                : (timeAgo ? timeAgo(t.created_at) : "")),
           ),
         ),
       ),
