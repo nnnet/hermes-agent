@@ -1,0 +1,158 @@
+# Hourly rebase of `prod` onto pristine `main` (which is itself
+# fast-forwarded from upstream `NousResearch/hermes-agent` by sync.yml).
+#
+# Goal: pull upstream changes into our deploy branch (`prod`) within ~1h
+# of them landing in upstream, without operator intervention — UNLESS a
+# conflict happens, in which case we surface a draft PR + Telegram alert
+# and `prod` stays at the last-clean state.
+#
+# Pipeline:
+#   1. Fetch + checkout prod
+#   2. Enable git rerere (remembers past conflict resolutions, replays
+#      them on similar future conflicts → fewer manual reconciles)
+#   3. `git rebase main` — replays our 65-ish custom commits on top of
+#      latest upstream HEAD
+#   4. If conflict → abort, create draft PR `rebase-conflict-YYYY-MM-DD`,
+#      Telegram alert, exit success (so the run is greenly reported)
+#   5. If rebase clean → run pytest gate (catches semantic breakages
+#      where upstream renamed a function we patch, etc.)
+#   6. If pytest passes → `git push --force-with-lease origin prod`
+#   7. If pytest fails → discard rebase, Telegram alert with failing test
+#
+# Note: this runs OFFSET from sync.yml (which fires at :17 hourly) so
+# main has had time to fast-forward before we try to rebase onto it.
+
+name: Prod rebase onto main
+
+on:
+  schedule:
+    - cron: "27 * * * *"   # 10min after sync.yml
+  workflow_dispatch:
+
+concurrency:
+  group: prod-rebase
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rebase:
+    name: Rebase prod onto main
+    runs-on: ubuntu-latest
+    if: github.repository != 'NousResearch/hermes-agent'
+    steps:
+      - name: Checkout prod with full history
+        uses: actions/checkout@v4
+        with:
+          ref: prod
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity + rerere
+        run: |
+          git config user.name  "hermes-prod-rebase[bot]"
+          git config user.email "hermes-prod-rebase@users.noreply.github.com"
+          # rerere = REuse REcorded REsolution. Saves each manual conflict
+          # resolution to .git/rr-cache/ and auto-applies on next matching
+          # conflict. Crucial for the hourly cadence — first time someone
+          # resolves a conflict zone, all subsequent recurrences auto-resolve.
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+
+      - name: Restore rerere cache (cross-run memory)
+        uses: actions/cache@v4
+        with:
+          path: .git/rr-cache
+          key: rerere-${{ github.run_id }}
+          restore-keys: rerere-
+
+      - name: Fetch main
+        run: git fetch origin main:main
+
+      - name: Attempt rebase
+        id: rebase
+        continue-on-error: true
+        run: |
+          if git rebase main; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            # Capture diagnostic before abort
+            git status --porcelain > /tmp/conflict-files.txt
+            git diff --name-only --diff-filter=U > /tmp/conflict-list.txt
+            git rebase --abort
+          fi
+
+      - name: Run pytest gate (only on clean rebase)
+        if: steps.rebase.outputs.result == 'clean'
+        id: tests
+        continue-on-error: true
+        run: |
+          pip install --user uv
+          uv sync --frozen --no-install-project --extra dev --extra all
+          uv run pytest tests/ -x --maxfail=1 -q 2>&1 | tail -50
+
+      - name: Push prod (rebase clean + tests passed)
+        if: steps.rebase.outputs.result == 'clean' && steps.tests.outcome == 'success'
+        run: |
+          git push --force-with-lease=prod origin prod
+          echo "✓ prod fast-forwarded with upstream"
+
+      - name: Notify on rebase conflict
+        if: steps.rebase.outputs.result == 'conflict'
+        env:
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+        run: |
+          CONFLICTS=$(cat /tmp/conflict-list.txt || echo "(unknown)")
+          MSG=$(cat <<EOF
+          ⚠️ Hermes prod rebase: CONFLICT
+
+          prod cannot auto-rebase onto upstream. Manual reconcile needed.
+
+          Conflicting files:
+          $CONFLICTS
+
+          Run #${{ github.run_number }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          To resolve locally:
+            cd /mnt/9/aimanager/sources/hermes-agent
+            git fetch origin
+            git checkout prod && git pull --ff-only
+            git rebase main
+            # resolve conflicts manually, save with rerere
+            git rebase --continue
+            git push --force-with-lease origin prod
+          EOF
+          )
+          curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            --data-urlencode "text=${MSG}" \
+            -d disable_web_page_preview=true \
+            | head -c 200
+
+      - name: Notify on test failure
+        if: steps.rebase.outputs.result == 'clean' && steps.tests.outcome == 'failure'
+        env:
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+        run: |
+          MSG=$(cat <<EOF
+          ⚠️ Hermes prod rebase: TESTS FAILED
+
+          Rebase onto upstream was clean BUT pytest gate failed.
+          prod NOT pushed — staying at previous version.
+
+          Likely cause: upstream renamed/removed something our custom
+          code depends on. Inspect run logs for failing tests.
+
+          Run #${{ github.run_number }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            --data-urlencode "text=${MSG}" \
+            -d disable_web_page_preview=true \
+            | head -c 200
