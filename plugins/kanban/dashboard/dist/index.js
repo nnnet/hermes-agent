@@ -166,6 +166,25 @@
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
 
+  // localStorage key controlling the per-browser "Don't ask again" pref
+  // for the card delete confirmation. False by default (we always confirm
+  // because the DELETE endpoint hard-deletes the task + every derived row);
+  // user opts in by ticking the checkbox in the confirm dialog.
+  const LS_SKIP_DELETE_CONFIRM_KEY = "hermes.kanban.skipDeleteConfirm";
+
+  function readSkipDeleteConfirm() {
+    try {
+      return window.localStorage.getItem(LS_SKIP_DELETE_CONFIRM_KEY) === "1";
+    } catch (_e) { return false; }
+  }
+
+  function writeSkipDeleteConfirm(skip) {
+    try {
+      if (skip) window.localStorage.setItem(LS_SKIP_DELETE_CONFIRM_KEY, "1");
+      else window.localStorage.removeItem(LS_SKIP_DELETE_CONFIRM_KEY);
+    } catch (_e) { /* ignore quota / private mode */ }
+  }
+
   function readSelectedBoard() {
     try {
       const v = window.localStorage.getItem(LS_BOARD_KEY);
@@ -638,6 +657,28 @@
       });
     }, [loadBoard, board, t]);
 
+    // Hard-delete a task. Optimistic: pull the card off the board immediately,
+    // then call DELETE. On failure, reload to re-instate it so the UI doesn't
+    // lie about state. Drawer closes itself if the deleted task was open.
+    const deleteTask = useCallback(function (taskId) {
+      setBoardData(function (b) {
+        if (!b) return b;
+        const columns = b.columns.map(function (col) {
+          return Object.assign({}, col, {
+            tasks: col.tasks.filter(function (t) { return t.id !== taskId; }),
+          });
+        });
+        return Object.assign({}, b, { columns });
+      });
+      setSelectedTaskId(function (cur) { return cur === taskId ? null : cur; });
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
+        method: "DELETE",
+      }).catch(function (err) {
+        setError(tx(t, "deleteFailed", "Delete failed: ") + (err.message || err));
+        loadBoard();
+      });
+    }, [loadBoard, board, t]);
+
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
       setLastSelectedId(null);
@@ -947,6 +988,7 @@
           selectAllInColumn,
           onMove: moveTask,
           onMoveSelected: moveSelected,
+          onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1816,6 +1858,7 @@
           selectAllInColumn: props.selectAllInColumn,
           onMove: props.onMove,
           onMoveSelected: props.onMoveSelected,
+          onDelete: props.onDelete,
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
@@ -1948,6 +1991,7 @@
                       draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
+                      onDelete: props.onDelete,
                       onOpen: props.onOpen,
                     });
                   }),
@@ -1962,9 +2006,86 @@
                   draggingSource: props.draggingTaskId && props.selectedIds.has(props.draggingTaskId) && props.selectedIds.size > 1 && props.selectedIds.has(tk.id),
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
+                  onDelete: props.onDelete,
                   onOpen: props.onOpen,
                 });
               }),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Confirm-delete dialog
+  //
+  // Lightweight modal used by the card's trash icon. We can't use
+  // ``window.confirm`` because we need a "Don't ask again" checkbox to
+  // persist the user's preference into LS_SKIP_DELETE_CONFIRM_KEY. Click
+  // the shade or hit Escape to cancel.
+  // -------------------------------------------------------------------------
+
+  function DeleteConfirmDialog(props) {
+    const { t: i18n } = useI18n();
+    const [skipFuture, setSkipFuture] = useState(false);
+
+    useEffect(function () {
+      function onKey(e) {
+        if (e.key === "Escape") { e.preventDefault(); props.onCancel(); }
+        else if (e.key === "Enter") { e.preventDefault(); confirm(); }
+      }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [props.onCancel]);
+
+    function confirm() {
+      if (skipFuture) writeSkipDeleteConfirm(true);
+      props.onConfirm();
+    }
+
+    const title = props.task && (props.task.title || props.task.id);
+
+    return h("div", {
+      className: "hermes-kanban-confirm-shade",
+      onClick: function (e) {
+        // Click on shade (not bubbled from dialog) cancels.
+        if (e.target === e.currentTarget) props.onCancel();
+      },
+    },
+      h("div", {
+        className: "hermes-kanban-confirm-dialog",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "hermes-kanban-confirm-title",
+      },
+        h("div", { id: "hermes-kanban-confirm-title", className: "hermes-kanban-confirm-title" },
+          tx(i18n, "deleteTaskTitle", "Delete task?")),
+        h("div", { className: "hermes-kanban-confirm-body" },
+          h("div", { className: "hermes-kanban-confirm-message" },
+            tx(i18n, "deleteTaskWarning",
+               "This permanently removes the task, its comments, events, and run history. This cannot be undone.")),
+          title ? h("div", { className: "hermes-kanban-confirm-target" },
+            title) : null,
+        ),
+        h("label", { className: "hermes-kanban-confirm-skip" },
+          h("input", {
+            type: "checkbox",
+            checked: skipFuture,
+            onChange: function (e) { setSkipFuture(e.target.checked); },
+          }),
+          h("span", null, tx(i18n, "deleteTaskDontAsk", "Don't ask again")),
+        ),
+        h("div", { className: "hermes-kanban-confirm-actions" },
+          h(Button, {
+            variant: "outline",
+            size: "sm",
+            onClick: props.onCancel,
+          }, tx(i18n, "cancel", "Cancel")),
+          h(Button, {
+            size: "sm",
+            className: "hermes-kanban-confirm-delete-btn",
+            onClick: confirm,
+          }, tx(i18n, "delete", "Delete")),
+        ),
       ),
     );
   }
@@ -1998,10 +2119,24 @@
     const { t: i18n } = useI18n();
     const t = props.task;
     const cardRef = useRef(null);
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
     useEffect(function () {
       return attachTouchDrag(cardRef.current, t.id);
     }, [t.id]);
+
+    const handleTrashClick = function (e) {
+      // Stop bubbling so the card's onClick doesn't open the drawer.
+      // Also disable native drag start while the dialog is open.
+      e.stopPropagation();
+      e.preventDefault();
+      if (!props.onDelete) return;
+      if (readSkipDeleteConfirm()) {
+        props.onDelete(t.id);
+      } else {
+        setConfirmOpen(true);
+      }
+    };
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
@@ -2049,7 +2184,16 @@
 
     const progress = t.progress;
 
-    return h("div", {
+    return h(React.Fragment, null,
+      confirmOpen ? h(DeleteConfirmDialog, {
+        task: t,
+        onCancel: function () { setConfirmOpen(false); },
+        onConfirm: function () {
+          setConfirmOpen(false);
+          if (props.onDelete) props.onDelete(t.id);
+        },
+      }) : null,
+      h("div", {
       ref: cardRef,
       "data-task-id": t.id,
       className: cn(
@@ -2118,6 +2262,37 @@
                   title: `${progress.done} of ${progress.total} child tasks done`,
                 }, `${progress.done}/${progress.total}`)
               : null,
+            props.onDelete ? h("button", {
+              type: "button",
+              className: "hermes-kanban-trash-btn",
+              title: tx(i18n, "deleteTaskHint",
+                        "Delete this task and all its history (irreversible)"),
+              "aria-label": tx(i18n, "deleteTaskAria",
+                               "Delete task ") + t.id,
+              onClick: handleTrashClick,
+              // Prevent the card's native drag from arming when the user
+              // started the gesture on the trash button.
+              onMouseDown: function (e) { e.stopPropagation(); },
+              onDragStart: function (e) { e.preventDefault(); e.stopPropagation(); },
+            },
+              h("svg", {
+                viewBox: "0 0 16 16",
+                width: "14", height: "14",
+                fill: "none",
+                stroke: "currentColor",
+                strokeWidth: "1.5",
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                "aria-hidden": "true",
+              },
+                // Trash bin: lid, body, two vertical stripes.
+                h("path", { d: "M2.5 4h11" }),
+                h("path", { d: "M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4" }),
+                h("path", { d: "M4.5 4l.5 9a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-9" }),
+                h("path", { d: "M7 7v5" }),
+                h("path", { d: "M9 7v5" }),
+              ),
+            ) : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
@@ -2142,6 +2317,7 @@
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
         ),
+      ),
       ),
     );
   }
@@ -2302,6 +2478,15 @@
     const [err, setErr] = useState(null);
     const [newComment, setNewComment] = useState("");
     const [editing, setEditing] = useState(false);
+    // Drawer collapse — when true, the modal shade + body disappear and a
+    // thin right-edge handle takes their place so the user can keep the
+    // task "pinned" while still reading the board behind it. Click the
+    // handle (or the chevron in the head) to restore. Reset every time
+    // the drawer is opened for a different task so the user always gets
+    // the full UI for a fresh open. Persisting across reloads would be
+    // surprising — leave it ephemeral.
+    const [collapsed, setCollapsed] = useState(false);
+    useEffect(function () { setCollapsed(false); }, [props.taskId]);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -2451,6 +2636,40 @@
         });
     };
 
+    // Collapsed view: a thin vertical handle pinned to the right edge.
+    // The shade is omitted so clicks on the board pass through. Click the
+    // handle anywhere to restore the full drawer; click ✕ inside the handle
+    // to close entirely (same as Escape in the expanded view).
+    if (collapsed) {
+      const previewTitle = (data && data.task && data.task.title) || props.taskId;
+      return h("div", {
+        className: "hermes-kanban-drawer-handle",
+        role: "button",
+        tabIndex: 0,
+        title: tx(t, "drawerExpandHint", "Expand task drawer"),
+        onClick: function () { setCollapsed(false); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setCollapsed(false);
+          }
+        },
+      },
+        h("button", {
+          type: "button",
+          className: "hermes-kanban-drawer-handle-close",
+          title: tx(t, "close", "Close (Esc)"),
+          "aria-label": tx(t, "close", "Close (Esc)"),
+          onClick: function (e) { e.stopPropagation(); props.onClose(); },
+        }, "×"),
+        h("span", {
+          className: "hermes-kanban-drawer-handle-chevron",
+          "aria-hidden": "true",
+        }, "‹"),
+        h("span", { className: "hermes-kanban-drawer-handle-title" }, previewTitle),
+      );
+    }
+
     return h("div", { className: "hermes-kanban-drawer-shade", onClick: props.onClose },
       h("div", {
         className: "hermes-kanban-drawer",
@@ -2458,6 +2677,14 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
+          h("button", {
+            type: "button",
+            onClick: function () { setCollapsed(true); },
+            className: "hermes-kanban-drawer-collapse",
+            title: tx(t, "drawerCollapseHint",
+                      "Collapse to right edge — keep this task pinned while reading the board"),
+            "aria-label": tx(t, "drawerCollapseAria", "Collapse drawer"),
+          }, "›"),
           h("button", {
             type: "button",
             onClick: props.onClose,
