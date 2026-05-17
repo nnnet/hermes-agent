@@ -73,10 +73,19 @@ RUN npm install --prefer-offline --no-audit && \
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
 #
+# `--extra claude-agent-sdk` bundles the official Anthropic Agent SDK
+# (which itself bundles the `claude` CLI binary) into the image so the
+# `provider: claude-agent-sdk` path doesn't need to do a runtime
+# `pip install` from `tools/lazy_deps.py` on first use. This is the
+# nnnet/AiManager-specific cutover from Meridian — kept as an explicit
+# `--extra` rather than added to `[all]` because upstream's `[all]`
+# is intentionally minimal (provider extras live in LAZY_DEPS). See
+# docs/claude-agent-sdk-integration.md.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all
+RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

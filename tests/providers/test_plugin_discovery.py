@@ -47,7 +47,12 @@ def test_bundled_plugins_discovered():
 
 
 def test_all_34_profiles_register():
-    """After discovery, the registry must contain exactly 34 distinct profiles."""
+    """After discovery, the registry must contain exactly 34 distinct profiles.
+
+    Count bumped from 33 → 34 when ``claude-agent-sdk`` was added in Phase 1.3
+    of the Meridian-replacement project (see
+    docs/claude-agent-sdk-integration.md).
+    """
     _clear_provider_caches()
     from providers import list_providers
 
@@ -57,8 +62,8 @@ def test_all_34_profiles_register():
 
     # Spot-check representative providers from different categories
     for required in (
-        "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "openrouter", "anthropic", "claude-agent-sdk", "custom", "bedrock",
+        "openai-codex", "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
     ):
         assert required in names, f"Missing profile: {required}"
 
