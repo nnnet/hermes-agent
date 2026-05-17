@@ -1,0 +1,21 @@
+plugins/kanban/dashboard/dist/index.js
+  s_e5369d415d379b::t_520f52e1e40922 1645
+tests/plugins/test_kanban_dashboard_plugin.py
+  s_e5369d415d379b::t_11c3f6ac644096 1799-1811,1818-1821
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "41d6ef30f06664ddeabf54f8bc4cba3842594940",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
