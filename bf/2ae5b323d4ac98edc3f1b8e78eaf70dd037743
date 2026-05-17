@@ -1,0 +1,31 @@
+plugins/kanban/dashboard/dist/style.css
+  s_e5369d415d379b::t_afdc14279c8633 300-301,358-359,369-454,1589-1706
+tests/plugins/kanban/test_board_archive_api.py
+  s_e5369d415d379b::t_afdc14279c8633 1-540
+tests/plugins/test_kanban_dashboard_plugin.py
+  s_e5369d415d379b::t_afdc14279c8633 1797-1961
+tests/plugins/kanban/test_dashboard_stage_entered_time.py
+  s_e5369d415d379b::t_afdc14279c8633 1-323
+plugins/kanban/dashboard/plugin_api.py
+  s_e5369d415d379b::t_afdc14279c8633 140-249,254,263-279,542-543,550-554,600-651,668-673,733-741,877-989,1811-1992,1994-2024,2026,2029-2073,2077-2121
+hermes_cli/kanban_db.py
+  s_e5369d415d379b::t_afdc14279c8633 556-812,1178-1192
+plugins/kanban/dashboard/dist/index.js
+  s_e5369d415d379b::t_afdc14279c8633 169-187,660-681,907-946,948-950,952-958,961-992,994-1008,1038-1041,1043-1050,1096,1565-1596,1628-1766,1769-1772,1774-1778,1780-1861,2218,2351,2366,2374-2449,2479,2485-2497,2545-2554,2630-2660,2682-2718,2722,2882-2890,3040-3073,3081-3088
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "bf2ae5b323d4ac98edc3f1b8e78eaf70dd037743",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
