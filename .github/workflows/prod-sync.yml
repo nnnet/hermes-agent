@@ -1,0 +1,170 @@
+# Hourly merge of pristine `main` (kept FF-aligned with upstream
+# `NousResearch/hermes-agent` by sync.yml) into our deploy branch `prod`.
+#
+# Why merge, not rebase: rebase replays our 65+ custom commits one by
+# one on top of fresh upstream, hitting transient conflicts at each
+# commit boundary (verified empirically — first test run hit
+# tools/tts_tool.py at commit 2/34). Merge resolves each pair of file
+# diffs ONCE per upstream cycle, keeps the conflict set minimal, and
+# doesn't require force-push.
+#
+# Pipeline:
+#   1. Fetch + checkout prod
+#   2. Enable git rerere (auto-replays prior conflict resolutions)
+#   3. `git merge --no-edit --no-ff main` — folds upstream into prod
+#   4. If conflict → abort, Telegram alert, prod stays put
+#   5. If merge clean → run pytest gate
+#   6. Tests pass → `git push origin prod` (regular push, no force)
+#   7. Tests fail → reset merge, Telegram alert
+
+name: Prod sync from main
+
+on:
+  schedule:
+    - cron: "27 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: prod-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Merge main into prod
+    runs-on: ubuntu-latest
+    if: github.repository != 'NousResearch/hermes-agent'
+    steps:
+      - name: Checkout prod with full history
+        uses: actions/checkout@v4
+        with:
+          ref: prod
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity + rerere
+        run: |
+          git config user.name  "hermes-prod-sync[bot]"
+          git config user.email "hermes-prod-sync@users.noreply.github.com"
+          git config rerere.enabled true
+          git config rerere.autoupdate true
+
+      - name: Restore rerere cache (cross-run memory)
+        uses: actions/cache@v4
+        with:
+          path: .git/rr-cache
+          key: rerere-${{ github.run_id }}
+          restore-keys: rerere-
+
+      - name: Fetch main
+        run: git fetch origin main:main
+
+      - name: Check if main has new commits
+        id: gate
+        run: |
+          BEHIND=$(git rev-list --count prod..main)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [[ "$BEHIND" == "0" ]]; then
+            echo "::notice::prod is up to date with main — nothing to merge"
+          fi
+
+      - name: Attempt merge
+        id: merge
+        if: steps.gate.outputs.behind != '0'
+        continue-on-error: true
+        run: |
+          if git merge --no-ff --no-edit \
+              -m "Auto-merge main into prod (workflow run #${{ github.run_number }})" \
+              main; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > /tmp/conflict-list.txt
+            git merge --abort
+          fi
+
+      - name: Run pytest gate (only on clean merge)
+        if: steps.merge.outputs.result == 'clean'
+        id: tests
+        continue-on-error: true
+        run: |
+          pip install --user uv
+          uv sync --frozen --no-install-project --extra dev --extra all
+          uv run pytest tests/ -x --maxfail=1 -q 2>&1 | tail -50
+
+      - name: Push prod (merge clean + tests passed)
+        if: steps.merge.outputs.result == 'clean' && steps.tests.outcome == 'success'
+        run: |
+          git push origin prod
+          echo "✓ prod merged with upstream main"
+
+      - name: Reset merge if tests failed
+        if: steps.merge.outputs.result == 'clean' && steps.tests.outcome == 'failure'
+        run: |
+          # Tests caught a regression — back out the merge so prod stays
+          # at the last-known-good state. The push above is conditional,
+          # so prod was NEVER pushed; this is just cleanup of the workdir.
+          git reset --hard HEAD~1
+
+      - name: Notify on merge conflict
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+        run: |
+          CONFLICTS=$(cat /tmp/conflict-list.txt || echo "(unknown)")
+          MSG=$(cat <<EOF
+          ⚠️ Hermes prod sync: CONFLICT
+
+          main has ${{ steps.gate.outputs.behind }} commits prod hasn't
+          absorbed yet, and the merge hit conflicts. Manual reconcile
+          needed; prod stays at last-clean state until then.
+
+          Conflicting files:
+          $CONFLICTS
+
+          Run #${{ github.run_number }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          To resolve locally:
+            cd /mnt/9/aimanager/sources/hermes-agent
+            git fetch origin
+            git checkout prod && git pull --ff-only
+            git merge main
+            # resolve conflicts, save with rerere
+            git commit
+            git push origin prod
+          EOF
+          )
+          curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            --data-urlencode "text=${MSG}" \
+            -d disable_web_page_preview=true \
+            | head -c 200
+
+      - name: Notify on test failure
+        if: steps.merge.outputs.result == 'clean' && steps.tests.outcome == 'failure'
+        env:
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_HOME_CHANNEL }}
+        run: |
+          MSG=$(cat <<EOF
+          ⚠️ Hermes prod sync: TESTS FAILED
+
+          Merge of main into prod was clean BUT pytest gate failed.
+          prod was NOT updated — staying at previous version.
+
+          Likely cause: upstream change broke our custom code (renamed
+          a function we patch, moved a file we extend, etc.). Inspect
+          run logs for failing tests.
+
+          Run #${{ github.run_number }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          curl -sS "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d chat_id="${CHAT}" \
+            --data-urlencode "text=${MSG}" \
+            -d disable_web_page_preview=true \
+            | head -c 200
