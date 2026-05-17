@@ -1,0 +1,26 @@
+agent/chat_completion_helpers.py
+  s_e5369d415d379b::t_9eda6459bf14c9 110-115
+  s_e5369d415d379b::t_4aef829e180f97 265-282
+  s_e5369d415d379b::t_be3dbde1b0708f 1187-1204
+agent/conversation_loop.py
+  s_e5369d415d379b::t_616e3962cf545b 1099-1113
+  s_e5369d415d379b::t_37ae651b8cb768 1282-1289
+tests/providers/test_plugin_discovery.py
+  s_e5369d415d379b::t_f400d13325fd6f 49-58,65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "c86e6673267378dd88770bdcd873489734aaf9d9",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
