@@ -1882,18 +1882,21 @@ def test_dashboard_hard_delete_non_empty_uses_two_step_confirm():
     assert "if (!currentTotal || currentTotal <= 0)" in js
 
 
-def test_dashboard_card_ago_collapses_duplicate_bucket():
-    """Card meta row must hide the redundant "/ second timeAgo" when both
-    timeAgo() calls collapse to the same coarse bucket.
+def test_dashboard_card_ago_renders_both_through_slash():
+    """Card meta row must ALWAYS render both timeAgo values through a
+    slash when ``entered_status_at`` differs from ``created_at``, even
+    when the two values collapse to the same coarse bucket.
 
-    Why: ``feat/kanban-card-stage-entered-time`` renders
-    ``timeAgo(created_at) / timeAgo(entered_status_at)`` to surface the
-    in-stage age. But timeAgo() buckets to "Xm/Xh/Xd ago", so a task
-    created and promoted within the same hour produces identical strings
-    (e.g. "1h ago / 1h ago"). The duplicate carries no info and reads
-    visually as a single value with stray punctuation. Suppress it.
-    What: Asserts the bundle's render path computes both strings, then
-    only joins them with " / " when ``enteredAgo !== createdAgo``.
+    Why: Earlier iteration hid the "/ second" when the buckets
+    coincided, but the user explicitly requested both values be
+    visible at all times (knowing the task hasn't moved is itself
+    information). The bundle now strips trailing " ago" from each
+    side and appends a single " ago" once at the end so the
+    punctuation reads naturally (e.g. ``"3h / 12m ago"`` instead of
+    ``"3h ago / 12m ago"``).
+    What: Asserts the bundle's render path computes both strings,
+    strips the suffix via a ``stripAgo`` helper, and joins them with
+    ``" / "`` unconditionally whenever ``enteredAgo`` is present.
     Test: Run pytest on this file; the substring checks below all
     appear in the bundle exactly as written. If a future refactor
     inlines the conditional, update these substrings to match.
@@ -1903,9 +1906,22 @@ def test_dashboard_card_ago_collapses_duplicate_bucket():
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     ).read_text()
 
-    # Both timestamps are computed locally so we can compare buckets.
+    # Both timestamps are still computed locally.
     assert "const createdAgo = timeAgo ? timeAgo(t.created_at)" in js
     assert "timeAgo(t.entered_status_at)" in js
-    # The slash is only rendered when the second bucket differs.
-    assert '(enteredAgo && enteredAgo !== createdAgo)' in js
-    assert '`${createdAgo} / ${enteredAgo}`' in js
+
+    # Suffix-stripping logic: a local helper drops trailing " ago" so
+    # we can re-attach a single one after the join.
+    assert "stripAgo" in js
+    assert '.endsWith(" ago")' in js
+    assert ".slice(0, -4)" in js
+
+    # Both-had-ago branch produces "{cShort} / {eShort} ago" — a single
+    # trailing " ago", with the slash inside.
+    assert '`${cShort} / ${eShort} ago`' in js
+    # Special-string branch (e.g. "just now"/"yesterday") drops the
+    # trailing " ago" entirely.
+    assert '`${cShort} / ${eShort}`' in js
+    # The slash is rendered unconditionally whenever enteredAgo exists,
+    # not gated on bucket inequality.
+    assert "if (!enteredAgo)" in js

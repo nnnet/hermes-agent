@@ -2646,20 +2646,37 @@
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
             (function () {
-              // "created / in-stage" age. Show single value when both
-              // timeAgo strings collapse to the same coarse bucket
-              // (e.g. "1h ago / 1h ago") — the duplicate carries no
-              // information and the user reads it as a single value
-              // anyway. The tooltip always retains both raw timestamps
-              // so power users can still inspect the precise per-stage
-              // entry time when buckets coincide.
+              // "created / in-stage" age. ALWAYS render both timestamps
+              // through a slash when entered_status_at differs from
+              // created_at — even if timeAgo() collapses them to the
+              // same coarse bucket (e.g. "3h / 3h ago"). User explicitly
+              // requested both values visible: knowing the task entered
+              // the current stage in the same hour-bucket as creation
+              // is itself information ("hasn't moved yet"). We strip
+              // the trailing " ago" from each side and re-append a
+              // single " ago" at the end so the punctuation reads
+              // naturally. Special strings like "just now" / "yesterday"
+              // don't carry the " ago" suffix — we render them as-is
+              // and skip the trailing " ago" if either side lacks it.
+              // Tooltip retains both raw timestamps unchanged.
               const createdAgo = timeAgo ? timeAgo(t.created_at) : "";
               const enteredAgo = (timeAgo && t.entered_status_at && t.entered_status_at !== t.created_at)
                 ? timeAgo(t.entered_status_at)
                 : null;
-              const text = (enteredAgo && enteredAgo !== createdAgo)
-                ? `${createdAgo} / ${enteredAgo}`
-                : createdAgo;
+              let text;
+              if (!enteredAgo) {
+                // No second timestamp (status never advanced past creation)
+                // — preserve legacy single-value rendering.
+                text = createdAgo;
+              } else {
+                const stripAgo = (s) => (s && s.endsWith(" ago") ? s.slice(0, -4) : s);
+                const cShort = stripAgo(createdAgo);
+                const eShort = stripAgo(enteredAgo);
+                const bothHadAgo = createdAgo.endsWith(" ago") && enteredAgo.endsWith(" ago");
+                text = bothHadAgo
+                  ? `${cShort} / ${eShort} ago`
+                  : `${cShort} / ${eShort}`;
+              }
               const title = t.entered_status_at && t.entered_status_at !== t.created_at
                 ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
                 : (t.created_at ? `Created ${t.created_at}` : "");
