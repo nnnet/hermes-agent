@@ -931,9 +931,17 @@
       });
     }, [board, loadBoardList, switchBoard, t]);
 
-    const hardDeleteBoard = useCallback(function (slug) {
+    // Hard-delete with optional cascade. Cascade is the explicit opt-in for
+    // destroying a non-empty board (active + archived tasks); without it the
+    // backend returns 409 so the user can't wipe data with a single misclick.
+    // Why: see Issue 1 — clicking [Delete] on a non-empty board used to dead-
+    // end at the 409 banner with no way forward.
+    const hardDeleteBoard = useCallback(function (slug, opts) {
+      opts = opts || {};
       if (!slug || slug === "default") return Promise.resolve();
-      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}?delete=true`, {
+      const cascade = !!opts.cascade;
+      const qs = cascade ? "?delete=true&cascade=true" : "?delete=true";
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}${qs}`, {
         method: "DELETE",
       }).then(function (res) {
         loadBoardList();
@@ -1573,22 +1581,42 @@
         }, tx(t, "newBoard", "+ New board")),
         // Archive / Hard-delete buttons. Shift-click on Archive escalates
         // to hard delete for power users; the explicit Delete button is
-        // shown alongside for discoverability. Hard delete refuses (409)
-        // when the board has any tasks — the integrity rule lives on the
-        // backend so even a malicious / outdated UI can't cause data loss.
+        // shown alongside for discoverability.
+        //
+        // Hard-delete UX (shared by shift-Archive and Delete):
+        //   * Empty board (currentTotal === 0) — single confirm, fire.
+        //   * Non-empty board — TWO confirms: first describes the
+        //     consequences and recommends Archive; second is the
+        //     "absolutely sure" gate. Only then does the call go through
+        //     with cascade=true. The backend integrity rule (refuse-by-
+        //     default on non-empty boards) stays intact — even an outdated
+        //     UI can't wipe data without explicit cascade.
+        function confirmAndHardDelete() {
+          if (!props.onHardDeleteBoard) return;
+          if (!currentTotal || currentTotal <= 0) {
+            const msg = tx(t, "hardDeleteEmptyBoardConfirm",
+              "Delete empty board '{name}'? This removes the directory permanently.",
+              { name: currentName });
+            if (window.confirm(msg)) {
+              props.onHardDeleteBoard(props.board).catch(function () {});
+            }
+            return;
+          }
+          const msg1 = tx(t, "hardDeleteNonEmptyBoardConfirm",
+            "Board '{name}' has {n} task(s). This will PERMANENTLY delete the board AND every task on it (active + archived). This cannot be undone. Consider Archive instead. Proceed with hard delete?",
+            { name: currentName, n: String(currentTotal) });
+          if (!window.confirm(msg1)) return;
+          const msg2 = tx(t, "hardDeleteNonEmptyBoardConfirm2",
+            "ABSOLUTELY SURE? This will destroy board '{name}' and all {n} task(s) permanently.",
+            { name: currentName, n: String(currentTotal) });
+          if (!window.confirm(msg2)) return;
+          props.onHardDeleteBoard(props.board, { cascade: true }).catch(function () {});
+        }
         props.board !== "default"
           ? h(Button, {
             onClick: function (ev) {
               const hardDelete = !!(ev && (ev.shiftKey || ev.altKey));
-              if (hardDelete) {
-                const msg = tx(t, "hardDeleteBoardConfirm",
-                  "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
-                  { name: currentName });
-                if (window.confirm(msg) && props.onHardDeleteBoard) {
-                  props.onHardDeleteBoard(props.board).catch(function () {});
-                }
-                return;
-              }
+              if (hardDelete) { confirmAndHardDelete(); return; }
               const msg = tx(t, "archiveBoardConfirm",
                 "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
                 { name: currentName });
@@ -1613,23 +1641,16 @@
             size: "sm",
             className: "h-8",
             title: tx(t, "archiveBoardTitle",
-              "Archive this board (Shift-click for hard delete — irreversible, zero-task required)"),
+              "Archive this board (recoverable). Shift-click for hard delete (destructive)."),
           }, tx(t, "archive", "Archive"))
           : null,
         props.board !== "default"
           ? h(Button, {
-            onClick: function () {
-              const msg = tx(t, "hardDeleteBoardConfirm",
-                "HARD DELETE board '{name}'? This is irreversible — the directory and every task in it will be permanently removed. Only allowed when the board has zero tasks (active or archived).",
-                { name: currentName });
-              if (window.confirm(msg) && props.onHardDeleteBoard) {
-                props.onHardDeleteBoard(props.board).catch(function () {});
-              }
-            },
+            onClick: confirmAndHardDelete,
             size: "sm",
             className: "h-8 hermes-kanban-board-delete",
             title: tx(t, "hardDeleteBoardTitle",
-              "Permanently delete this board (zero-task required)"),
+              "Permanently delete this board (and all its tasks if non-empty)"),
           }, tx(t, "delete", "Delete"))
           : null,
         h(Button, {
@@ -2625,20 +2646,37 @@
                   "↔ ", t.link_counts.parents + t.link_counts.children)
               : null,
             (function () {
-              // "created / in-stage" age. Show single value when both
-              // timeAgo strings collapse to the same coarse bucket
-              // (e.g. "1h ago / 1h ago") — the duplicate carries no
-              // information and the user reads it as a single value
-              // anyway. The tooltip always retains both raw timestamps
-              // so power users can still inspect the precise per-stage
-              // entry time when buckets coincide.
+              // "created / in-stage" age. ALWAYS render both timestamps
+              // through a slash when entered_status_at differs from
+              // created_at — even if timeAgo() collapses them to the
+              // same coarse bucket (e.g. "3h / 3h ago"). User explicitly
+              // requested both values visible: knowing the task entered
+              // the current stage in the same hour-bucket as creation
+              // is itself information ("hasn't moved yet"). We strip
+              // the trailing " ago" from each side and re-append a
+              // single " ago" at the end so the punctuation reads
+              // naturally. Special strings like "just now" / "yesterday"
+              // don't carry the " ago" suffix — we render them as-is
+              // and skip the trailing " ago" if either side lacks it.
+              // Tooltip retains both raw timestamps unchanged.
               const createdAgo = timeAgo ? timeAgo(t.created_at) : "";
               const enteredAgo = (timeAgo && t.entered_status_at && t.entered_status_at !== t.created_at)
                 ? timeAgo(t.entered_status_at)
                 : null;
-              const text = (enteredAgo && enteredAgo !== createdAgo)
-                ? `${createdAgo} / ${enteredAgo}`
-                : createdAgo;
+              let text;
+              if (!enteredAgo) {
+                // No second timestamp (status never advanced past creation)
+                // — preserve legacy single-value rendering.
+                text = createdAgo;
+              } else {
+                const stripAgo = (s) => (s && s.endsWith(" ago") ? s.slice(0, -4) : s);
+                const cShort = stripAgo(createdAgo);
+                const eShort = stripAgo(enteredAgo);
+                const bothHadAgo = createdAgo.endsWith(" ago") && enteredAgo.endsWith(" ago");
+                text = bothHadAgo
+                  ? `${cShort} / ${eShort} ago`
+                  : `${cShort} / ${eShort}`;
+              }
               const title = t.entered_status_at && t.entered_status_at !== t.created_at
                 ? `Created ${t.created_at} / In ${t.status} since ${t.entered_status_at}`
                 : (t.created_at ? `Created ${t.created_at}` : "");

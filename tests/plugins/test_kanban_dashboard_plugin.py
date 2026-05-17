@@ -1824,18 +1824,79 @@ def test_dashboard_archive_viewer_button_label_distinct_from_action():
     assert 'tx(t, "showArchive", "Archive")' not in js
 
 
-def test_dashboard_card_ago_collapses_duplicate_bucket():
-    """Card meta row must hide the redundant "/ second timeAgo" when both
-    timeAgo() calls collapse to the same coarse bucket.
+def test_dashboard_hard_delete_supports_cascade_query_param():
+    """The hardDeleteBoard callback must thread cascade=true through to the
+    DELETE endpoint so the dashboard can destroy a non-empty board after the
+    user explicitly confirms.
 
-    Why: ``feat/kanban-card-stage-entered-time`` renders
-    ``timeAgo(created_at) / timeAgo(entered_status_at)`` to surface the
-    in-stage age. But timeAgo() buckets to "Xm/Xh/Xd ago", so a task
-    created and promoted within the same hour produces identical strings
-    (e.g. "1h ago / 1h ago"). The duplicate carries no info and reads
-    visually as a single value with stray punctuation. Suppress it.
-    What: Asserts the bundle's render path computes both strings, then
-    only joins them with " / " when ``enteredAgo !== createdAgo``.
+    Why: Issue 1 from the field — clicking [Delete] on a non-empty board
+    used to return 409 with no path forward. The fix lets the UI pass
+    cascade=true after a two-step confirm; the backend retains its
+    integrity rule (refuse-by-default) so a stale UI still can't wipe
+    data silently.
+    What: Asserts the bundle builds the correct query string for both
+    branches (no-cascade vs cascade) and that the click handler routes
+    through the shared confirm helper.
+    Test: Substring checks against the built bundle for the
+    cascade=true URL pattern and the helper name.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # hardDeleteBoard now accepts an opts arg with cascade.
+    assert "function (slug, opts)" in js
+    # Query string includes cascade=true when opted in, default delete=true otherwise.
+    assert '"?delete=true&cascade=true"' in js
+    assert '"?delete=true"' in js
+    # Shared confirm helper exists and routes through onHardDeleteBoard.
+    assert "function confirmAndHardDelete()" in js
+    assert "props.onHardDeleteBoard(props.board, { cascade: true })" in js
+
+
+def test_dashboard_hard_delete_non_empty_uses_two_step_confirm():
+    """Non-empty board hard-delete must require TWO confirms before firing.
+
+    Why: A single misclick on [Delete] used to dead-end at 409; the cure
+    must not over-correct into a single-confirm cascade wipe. The
+    two-step pattern (consequences → "absolutely sure") matches the
+    PM-supplied UX rule for irreversible destructive actions.
+    What: The bundle must contain both confirm copy strings and route
+    through them in sequence; empty boards still use the single-confirm
+    path.
+    Test: Substring checks for the two-step strings and the empty-board
+    fallback copy.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Empty-board single confirm.
+    assert "hardDeleteEmptyBoardConfirm" in js
+    # Non-empty two-step confirms.
+    assert "hardDeleteNonEmptyBoardConfirm" in js
+    assert "hardDeleteNonEmptyBoardConfirm2" in js
+    # Branching on currentTotal so empty boards skip the harsh wording.
+    assert "if (!currentTotal || currentTotal <= 0)" in js
+
+
+def test_dashboard_card_ago_renders_both_through_slash():
+    """Card meta row must ALWAYS render both timeAgo values through a
+    slash when ``entered_status_at`` differs from ``created_at``, even
+    when the two values collapse to the same coarse bucket.
+
+    Why: Earlier iteration hid the "/ second" when the buckets
+    coincided, but the user explicitly requested both values be
+    visible at all times (knowing the task hasn't moved is itself
+    information). The bundle now strips trailing " ago" from each
+    side and appends a single " ago" once at the end so the
+    punctuation reads naturally (e.g. ``"3h / 12m ago"`` instead of
+    ``"3h ago / 12m ago"``).
+    What: Asserts the bundle's render path computes both strings,
+    strips the suffix via a ``stripAgo`` helper, and joins them with
+    ``" / "`` unconditionally whenever ``enteredAgo`` is present.
     Test: Run pytest on this file; the substring checks below all
     appear in the bundle exactly as written. If a future refactor
     inlines the conditional, update these substrings to match.
@@ -1845,9 +1906,22 @@ def test_dashboard_card_ago_collapses_duplicate_bucket():
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     ).read_text()
 
-    # Both timestamps are computed locally so we can compare buckets.
+    # Both timestamps are still computed locally.
     assert "const createdAgo = timeAgo ? timeAgo(t.created_at)" in js
     assert "timeAgo(t.entered_status_at)" in js
-    # The slash is only rendered when the second bucket differs.
-    assert '(enteredAgo && enteredAgo !== createdAgo)' in js
-    assert '`${createdAgo} / ${enteredAgo}`' in js
+
+    # Suffix-stripping logic: a local helper drops trailing " ago" so
+    # we can re-attach a single one after the join.
+    assert "stripAgo" in js
+    assert '.endsWith(" ago")' in js
+    assert ".slice(0, -4)" in js
+
+    # Both-had-ago branch produces "{cShort} / {eShort} ago" — a single
+    # trailing " ago", with the slash inside.
+    assert '`${cShort} / ${eShort} ago`' in js
+    # Special-string branch (e.g. "just now"/"yesterday") drops the
+    # trailing " ago" entirely.
+    assert '`${cShort} / ${eShort}`' in js
+    # The slash is rendered unconditionally whenever enteredAgo exists,
+    # not gated on bucket inequality.
+    assert "if (!enteredAgo)" in js

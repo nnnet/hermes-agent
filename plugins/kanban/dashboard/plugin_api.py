@@ -1999,7 +1999,11 @@ def delete_board(
     ),
     cascade: bool = Query(
         False,
-        description="(archive mode only) Also archive every non-archived task on this board",
+        description=(
+            "Archive mode: also archive every non-archived task. "
+            "Hard-delete mode: opt-in to destroy a non-empty board "
+            "(directory + every task, active and archived, are purged)."
+        ),
     ),
 ):
     """Archive (default) or hard-delete a board.
@@ -2007,14 +2011,16 @@ def delete_board(
     Why: Backwards-compatible entry point for the existing dashboard
     bundle which still emits ``DELETE /boards/{slug}``. New code should
     prefer ``POST /boards/{slug}/archive`` (explicit) or this endpoint
-    with ``delete=true`` (hard delete, zero-task requirement enforced).
+    with ``delete=true`` (hard delete; ``cascade=true`` opts in to
+    destroying a non-empty board outright).
     What: With ``delete=false`` (default) → behaves like the archive
     endpoint above (cascade rules included). With ``delete=true`` →
-    refuses unless the board has zero tasks total (active AND archived);
-    on success purges every on-disk trace (active dir + every matching
-    ``_archived/<slug>-*/`` entry).
-    Test: Try ``delete=true`` on a board with archived tasks — expect
-    409. Empty board with ``delete=true`` → success, dir gone.
+    refuses on a non-empty board unless ``cascade=true``; on success
+    purges every on-disk trace (active dir + every matching
+    ``_archived/<slug>-*/`` entry, including all tasks inside).
+    Test: Try ``delete=true`` on a non-empty board — expect 409 with
+    ``task_count`` in detail. Same call with ``cascade=true`` → 200 and
+    the entire board (active + archived dirs) is removed.
     """
     try:
         normed = kanban_db._normalize_board_slug(slug)
@@ -2032,11 +2038,7 @@ def delete_board(
         # Archive path — defer to the explicit archive endpoint logic.
         return archive_board_endpoint(slug=normed, cascade=cascade)
 
-    # Hard-delete path: zero tasks required across every state.
-    if not kanban_db.board_exists(normed):
-        # Maybe the board only lives in the archive — that's fine for
-        # hard delete; ``hard_delete_board`` will reject if nothing matches.
-        pass
+    # Hard-delete path. Refuse if it's the active board (switch first).
     if kanban_db.get_current_board() == normed:
         raise HTTPException(
             status_code=409,
@@ -2048,17 +2050,21 @@ def delete_board(
             },
         )
 
-    # Active task counts (if any active dir exists).
+    # Non-empty board requires explicit cascade=true opt-in. The integrity
+    # rule (refuse-by-default) stays intentional — accidental clicks on a
+    # board with content must NOT silently destroy data. Cascade is the
+    # power-user / dashboard-confirmed path.
     counts = _board_task_status_counts(normed)
     total = sum(counts.values())
-    if total > 0:
+    if total > 0 and not cascade:
         raise HTTPException(
             status_code=409,
             detail={
                 "error": (
                     f"board {normed!r} has {total} task(s) (active or archived); "
-                    "hard-delete is only allowed on an empty board. Archive "
-                    "the tasks first, or archive the whole board for a "
+                    "pass cascade=true to hard-delete the board AND every "
+                    "task on it (irreversible). Consider archive (POST "
+                    "/boards/{slug}/archive?cascade=true) for a "
                     "recoverable delete."
                 ),
                 "task_count": total,
