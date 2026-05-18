@@ -1,0 +1,7 @@
+name: aegis-attestation
+version: 0.1.0
+description: "Tier-A deterministic kanban-deliverable attestation. Polls 'blocked' tasks with review-required reason, verifies declared deliverables exist + hashes them with sha256, posts a signed (HMAC) attestation comment, and (optionally) auto-unblocks on pass. No LLM, no network, stdlib-only."
+author: "Hermes / nnnet fork"
+kind: standalone
+provides_hooks: []
+provides_tools: []

@@ -1184,7 +1184,10 @@ def multi_board_env(monkeypatch, tmp_path):
         )
     finally:
         conn.close()
-    # Alt board — explicit slug routes the connection to a separate DB
+    # Alt board — must be explicitly created via create_board() before
+    # connect(); the kanban_db.connect() no-resurrect guard refuses to
+    # mkdir non-default boards on the fly.
+    kb.create_board("alt")
     conn = kb.connect(board="alt")
     try:
         seed_alt = kb.create_task(
@@ -1385,7 +1388,9 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
 
     from hermes_cli import kanban_db as kb
     kb._INITIALIZED_PATHS.clear()
-    # Seed the alt board with a claimed task.
+    # Must create_board first — connect()'s no-resurrect guard rejects
+    # mkdir on the fly for non-default boards.
+    kb.create_board("alt")
     with kb.connect(board="alt") as conn:
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
         kb.claim_task(conn, tid)
