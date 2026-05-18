@@ -682,7 +682,22 @@ def cmd_disable(name: str) -> None:
 
 
 def _plugin_exists(name: str) -> bool:
-    """Return True if a plugin with *name* is installed (user) or bundled."""
+    """Return True if a plugin with *name* is installed (user) or bundled.
+
+    Why: Dashboard / CLI lookups pass the manifest ``name:`` value (e.g.
+    ``aegis-attestation``) but on disk the directory may use a different
+    spelling (``aegis_attestation``). We must compare against both the
+    directory name AND the manifest ``name`` field, for user plugins and
+    bundled plugins alike — otherwise enable/disable from the dashboard
+    returns ``Plugin 'X' is not installed or bundled.`` for any plugin
+    whose folder name differs from its declared name.
+    What: Returns True if *name* matches a directory name OR a manifest
+    ``name:`` value in either the user plugins dir or the bundled dir.
+    Test: Place a bundled plugin at ``plugins/aegis_attestation/`` with
+    ``plugin.yaml`` declaring ``name: aegis-attestation``; assert
+    ``_plugin_exists("aegis-attestation") is True`` and
+    ``_plugin_exists("aegis_attestation") is True``.
+    """
     # Installed: directory name or manifest name match in user plugins dir
     user_dir = _plugins_dir()
     if user_dir.is_dir():
@@ -695,6 +710,10 @@ def _plugin_exists(name: str) -> bool:
             if manifest.get("name") == name:
                 return True
     # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
+    # Match by directory name first, then by manifest ``name:`` field —
+    # bundled plugins like ``aegis_attestation`` declare a hyphenated
+    # canonical name (``aegis-attestation``) which is what the dashboard,
+    # CLI, and ``config.yaml`` enabled/disabled lists use.
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     if repo_plugins.is_dir():
@@ -704,6 +723,17 @@ def _plugin_exists(name: str) -> bool:
             or (candidate / "plugin.yml").exists()
         ):
             return True
+        for child in repo_plugins.iterdir():
+            if not child.is_dir():
+                continue
+            if not (
+                (child / "plugin.yaml").exists()
+                or (child / "plugin.yml").exists()
+            ):
+                continue
+            manifest = _read_manifest(child)
+            if manifest.get("name") == name:
+                return True
     return False
 
 
