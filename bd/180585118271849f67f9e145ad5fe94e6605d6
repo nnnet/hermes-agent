@@ -1,0 +1,60 @@
+plugins/aegis_attestation/SOUL.md
+  s_e5369d415d379b::t_f95df367e3aa0b 1-123
+tests/tools/test_voice_cli_integration.py
+  s_e5369d415d379b::t_f95df367e3aa0b 127-216
+tests/tools/test_kanban_tools.py
+  s_e5369d415d379b::t_26dcf111addf83 1391-1393
+  s_e5369d415d379b::t_32e09efd9b8e04 1187-1190
+plugins/aegis_attestation/__init__.py
+  s_e5369d415d379b::t_f95df367e3aa0b 1-309
+cli.py
+  s_e5369d415d379b::t_f95df367e3aa0b 10097,10100-10104,10106
+plugins/aegis_attestation/plugin.yaml
+  s_e5369d415d379b::t_f95df367e3aa0b 1-7
+plugins/aegis_attestation/tests/test_llm_review.py
+  s_e5369d415d379b::t_183d148ecb1633 1-290
+plugins/aegis_attestation/README.md
+  s_e5369d415d379b::t_f95df367e3aa0b 1-169
+plugins/aegis_attestation/tests/test_attestation.py
+  s_e5369d415d379b::t_f95df367e3aa0b 1-568
+hermes_cli/plugins_cmd.py
+  s_e5369d415d379b::t_f95df367e3aa0b 685-700,713-716,726-736
+plugins/aegis_attestation/manifest.json
+  s_e5369d415d379b::t_f95df367e3aa0b 1-9
+tools/tts_tool.py
+  s_e5369d415d379b::t_f95df367e3aa0b 2249,2303-2305
+plugins/aegis_attestation/llm_review.py
+  s_e5369d415d379b::t_e325242cc9f480 1-339
+plugins/aegis_attestation/__main__.py
+  s_e5369d415d379b::t_f95df367e3aa0b 1-16
+plugins/aegis_attestation/attestation.py
+  s_e5369d415d379b::t_f95df367e3aa0b 1-656
+skills/devops/self-critique/SKILL.md
+  s_e5369d415d379b::t_8c46000d2d092c 1-110
+tests/hermes_cli/test_plugins_cmd.py
+  s_e5369d415d379b::t_f95df367e3aa0b 789-848
+tools/aegis_review_tool.py
+  s_e5369d415d379b::t_5c52c6a3ea7c6a 1-132
+tests/tools/test_aegis_review_tool.py
+  s_e5369d415d379b::t_23fe68e22fa9b8 1-137
+hermes_cli/voice.py
+  s_e5369d415d379b::t_f95df367e3aa0b 782,784-788,790
+plugins/kanban/dashboard/plugin_api.py
+  s_e5369d415d379b::t_f95df367e3aa0b 994-1021
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "bd180585118271849f67f9e145ad5fe94e6605d6",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
