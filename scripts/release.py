@@ -184,6 +184,7 @@ AUTHOR_MAP = {
     "santoshhumagain1887@gmail.com": "npmisantosh",
     "39641663+luarss@users.noreply.github.com": "luarss",
     "16263913+zccyman@users.noreply.github.com": "zccyman",
+    "zccyman@users.noreply.github.com": "zccyman",  # PR #26998 (auxiliary fallback chain)
     "ahmetosrak@Ahmet-MacBook-Air.local": "Osraka",
     "98612432+Osraka@users.noreply.github.com": "Osraka",
     "112634774+ryptotalent@users.noreply.github.com": "ryptotalent",
@@ -1057,6 +1058,7 @@ AUTHOR_MAP = {
     "openclaw@agent.local": "29206394",  # PR #22194 salvage (sudo -S brute-force guard, #9590)
     "freedemon@gmail.com": "fr33d3m0n",  # PR #21128 salvage (sudo stdin/askpass DANGEROUS, #17873 cat 4)
     "zhaowh3613@outlook.com": "VinceZcrikl",  # PR #23647 salvage (npm UTF-8 decode on GBK Windows)
+    "abcdjmm970703@gmail.com": "JabberELF",  # PR #20238 seed (session_search dual-mode, evolved into single-shape)
     "anton.kuenzi@gmail.com": "ZeterMordio",  # PR #11754 salvage (zsh completion compdef + _arguments syntax)
     "23yntong@stu.edu.cn": "iuyup",  # PR #6155 salvage (shell=True hardening)
     "86501179+1RB@users.noreply.github.com": "1RB",  # PR #25462 salvage (discord forwarded messages)

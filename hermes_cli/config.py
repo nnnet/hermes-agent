@@ -871,15 +871,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
-        },
+        # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
+        # single-shape tool returns DB content directly). The old
+        # ``auxiliary.session_search.*`` block was removed here. Existing
+        # values in user config.yaml files are harmless leftovers and ignored.
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -1516,6 +1511,11 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
+        # the historical 2 MiB + one-backup behavior; long-running workers can
+        # raise these to keep more early failure evidence.
+        "worker_log_rotate_bytes": 2 * 1024 * 1024,
+        "worker_log_backup_count": 1,
         # Profile that decomposes tasks in the Triage column. When unset,
         # falls back to the default profile (the one `hermes` launches with
         # no -p flag). Set this to a dedicated 'orchestrator' profile if you

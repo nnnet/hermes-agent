@@ -352,6 +352,9 @@ def _compute_task_diagnostics(
     rule definitions.
     """
     from hermes_cli import kanban_diagnostics as kd
+    from hermes_cli.config import load_config
+
+    diag_config = kd.config_from_runtime_config(load_config())
 
     # Build the candidate task list. We need each task's row + its
     # events + its runs. Doing N separate queries works but scales
@@ -398,6 +401,7 @@ def _compute_task_diagnostics(
             r,
             events_by_task.get(tid, []),
             runs_by_task.get(tid, []),
+            config=diag_config,
         )
         if diags:
             out[tid] = [d.to_dict() for d in diags]
@@ -952,6 +956,71 @@ def delete_task(
                     "current_status": task.status,
                 },
             )
+
+        # Close any active run with outcome='reclaimed' so the run record is
+        # consistent before we drop everything; matters if the dispatcher
+        # later joins task_runs in audit queries that survive deletes.
+        if task.status == "running" and task.current_run_id:
+            kanban_db._end_run(
+                conn, task_id,
+                outcome="reclaimed", status="reclaimed",
+                summary="task hard-deleted from dashboard while run was active",
+            )
+
+        with kanban_db.write_txn(conn):
+            conn.execute(
+                "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
+                (task_id, task_id),
+            )
+            conn.execute("DELETE FROM task_comments WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
+            # kanban_notify_subs may not exist on older boards — guard.
+            try:
+                conn.execute(
+                    "DELETE FROM kanban_notify_subs WHERE task_id = ?",
+                    (task_id,),
+                )
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            if cur.rowcount != 1:
+                # Concurrent delete or row vanished between our get_task and
+                # the actual DELETE — surface as 404 so the UI removes the
+                # card either way.
+                raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        # Returning None with status_code=204 means FastAPI emits no body.
+        return None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id  — hard-delete a task and all its derived rows.
+#
+# This is destructive and irreversible: archive (PATCH status=archived) is
+# the soft-delete path for tasks the user wants to keep in history. Use
+# DELETE only when the task is truly garbage (e.g. an accidental create,
+# a duplicate of another card, or a crashed task that's already been
+# replaced) and you don't want it cluttering audit/event queries either.
+#
+# Tables touched (no FK cascades in v1 schema, so explicit deletes):
+#   - tasks            (the row itself)
+#   - task_links       (parent_id = ? OR child_id = ?)
+#   - task_comments    (task_id = ?)
+#   - task_events      (task_id = ?)
+#   - task_runs        (task_id = ?)
+#   - kanban_notify_subs (task_id = ?)  — gateway notification subscriptions
+# ---------------------------------------------------------------------------
+
+@router.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
         # Close any active run with outcome='reclaimed' so the run record is
         # consistent before we drop everything; matters if the dispatcher
