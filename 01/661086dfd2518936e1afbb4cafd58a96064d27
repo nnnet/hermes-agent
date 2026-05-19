@@ -1,0 +1,22 @@
+agent/prompt_builder.py
+  s_e5369d415d379b::t_fd6b0d6800d26b 242-283
+  s_e5369d415d379b::t_63db07c3ed960f 318-335,339
+  s_e5369d415d379b::t_9185a89e84f3f4 336-338,340
+  s_e5369d415d379b::t_5ff5920106d0d2 284,289-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "01661086dfd2518936e1afbb4cafd58a96064d27",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
