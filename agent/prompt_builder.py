@@ -239,10 +239,57 @@ KANBAN_GUIDANCE = (
     "of the decomposition. Do NOT execute the work yourself; your job is "
     "routing, not implementation.\n"
     "\n"
+    "## Tool selection — STRICT, MODEL-AGNOSTIC\n"
+    "\n"
+    "Three-step audit before EVERY tool call. Mandatory. Skipping it and\n"
+    "going to `execute_code` / `terminal` is a protocol violation flagged\n"
+    "in attestation.\n"
+    "\n"
+    "**1. Match the verb to a tool name.** Required first action.\n"
+    "  - write board comment   → `kanban_comment`   (NEVER execute_code+INSERT)\n"
+    "  - block a task          → `kanban_block`     (NEVER execute_code+UPDATE)\n"
+    "  - create a new task     → `kanban_create`    (NEVER CLI / sqlite)\n"
+    "  - spawn project chief   → `chief_spawn`      (NEVER write boards dir by hand)\n"
+    "  - check/list chiefs     → `chief_status` / `chief_list`\n"
+    "  - terminate chief       → `chief_terminate`  (NEVER kill PID)\n"
+    "  - complete task         → `kanban_complete`  (NEVER sqlite UPDATE)\n"
+    "  - read own task         → `kanban_show`      (NEVER file/db poke)\n"
+    "  - delegate reasoning    → `delegate_task`    (NEVER execute_code mock)\n"
+    "  - read/write file       → `read_file` / `write_file` / `patch`\n"
+    "  - search code           → `search_files`\n"
+    "  - find/scrape on web    → `web_search` / `web_extract`\n"
+    "  - remember / recall     → `hindsight_*` / `memory`\n"
+    "Any name match = tool is REQUIRED. 'I could write it in Python' is\n"
+    "not an exception.\n"
+    "\n"
+    "**2. Compose tools before considering code.** Most tasks fit a chain\n"
+    "of 2–5 native calls:\n"
+    "  - spawn chief + monitor   → `chief_spawn` → `chief_status` (loop)\n"
+    "  - handoff with metadata   → `kanban_comment(metadata)` → `kanban_block`\n"
+    "  - cite from web           → `web_search` → `web_extract` → `kanban_comment`\n"
+    "  - fan out to a team       → multiple `kanban_create` calls\n"
+    "If 2–5 native calls solve it, use them. Reaching for code while a\n"
+    "tool chain exists is a violation.\n"
+    "\n"
+    "**3. Fall through to code only when no tool / chain fits.** Legitimate\n"
+    "uses of `execute_code` / `terminal`: arbitrary data wrangling, tarball\n"
+    "building, custom binary parsing, ffmpeg/pandoc, interactive debugging.\n"
+    "Anything already covered by a tool (board ops, chief lifecycle, files,\n"
+    "web, search, memory) MUST go through that tool — no exceptions.\n"
+    "\n"
+    "Why strict: tools emit events the dispatcher, Aegis hooks, hindsight,\n"
+    "and downstream workers depend on. Raw `execute_code` + sqlite / CLI\n"
+    "bypasses them silently — direct work succeeds, surrounding system\n"
+    "degrades. The cost is invisible at call time, real in aggregate.\n"
+    "\n"
     "## Do NOT\n"
     "\n"
     "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
     "the `kanban_*` tools — they work across all terminal backends.\n"
+    "- Do not reach for `execute_code` / `terminal` with raw `sqlite3` /\n"
+    "  CLI invocations when a kanban_* / chief_* tool exists for the same\n"
+    "  verb. Specialised tools emit dispatcher / hook / attestation events\n"
+    "  that execute_code-based SQL silently bypasses.\n"
     "- Do not complete a task you didn't actually finish. Block it.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right "
     "specialist profile.\n"
@@ -268,7 +315,29 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm")
+#
+# 2026-05-19 — list expanded to cover effectively every supported model
+# family. Original assumption was that Claude / Sonnet / Opus / Haiku
+# "already do tool use right" and don't need steering, but in practice
+# every family benefits from the enforcement reminder and the policy is
+# meant to be model-agnostic: no worker should silently degrade because
+# its inference backend happens to be on the "trusted" list.
+#
+# `mimo` and `qwen` added after observing them route kanban_block /
+# chief_spawn / kanban_comment work through `execute_code` + raw sqlite3,
+# bypassing dispatcher events and Aegis attestation hooks (see
+# _runtime-notes/manual-test-plan-aegis-spawn-mc-evosci.md
+# "Aegis hook E2E / B-series").
+#
+# `claude` / `sonnet` / `opus` / `haiku` added so the same enforcement
+# applies on the Anthropic family — the policy is the discipline,
+# not the model. Substrings cover both bare names ("claude") and the
+# date-stamped variants ("claude-sonnet-4-6-20250929" etc).
+TOOL_USE_ENFORCEMENT_MODELS = (
+    "gpt", "codex", "gemini", "gemma", "grok", "glm",
+    "mimo", "qwen",
+    "claude", "sonnet", "opus", "haiku",
+)
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
