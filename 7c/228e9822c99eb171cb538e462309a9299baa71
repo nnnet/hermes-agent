@@ -1,0 +1,183 @@
+agent/credential_pool.py
+  s_e5369d415d379b::t_64632c7f739e3c 169-170,626-638,640,647-649,651-654,833,835-839,841,930-972,1409-1424
+tests/agent/test_credential_pool.py
+  s_e5369d415d379b::t_64632c7f739e3c 5,8,19-26,523-694
+plugins/aegis_attestation/attestation.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-762
+tools/aegis_review_tool.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-132
+plugins/aegis_attestation/contrib/aegis-tick.sh
+  s_e5369d415d379b::t_64632c7f739e3c 1-82
+plugins/aegis_attestation/contrib/aegis-tick.timer
+  s_e5369d415d379b::t_64632c7f739e3c 1-30
+plugins/kanban/dashboard/plugin_api.py
+  s_e5369d415d379b::t_64632c7f739e3c 355-357,404,961-1023
+tests/agent/test_auxiliary_client.py
+  s_e5369d415d379b::t_64632c7f739e3c 676-677,928-965,1154-1287,2526-2532,2552-2554,2588-2590
+plugins/aegis_attestation/tests/test_llm_review.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-290
+scripts/release.py
+  s_e5369d415d379b::t_64632c7f739e3c 187,1061
+tests/hermes_cli/test_kanban_core_functionality.py
+  s_e5369d415d379b::t_64632c7f739e3c 682-708,2709-2824
+website/docs/user-guide/features/memory.md
+  s_e5369d415d379b::t_64632c7f739e3c 180,182,188-189,195-196
+plugins/aegis_attestation/contrib/aegis-tick.service
+  s_e5369d415d379b::t_64632c7f739e3c 1-39
+agent/system_prompt.py
+  s_e5369d415d379b::t_64632c7f739e3c 159-162,261-267
+hermes_cli/runtime_provider.py
+  s_e5369d415d379b::t_64632c7f739e3c 878-880,1071-1073,1077,1083
+acp_adapter/events.py
+  s_e5369d415d379b::t_64632c7f739e3c 120,166-179
+plugins/aegis_attestation/manifest.json
+  s_e5369d415d379b::t_64632c7f739e3c 1-9
+tests/hermes_state/test_get_anchored_view.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-161
+hermes_cli/proxy/adapters/base.py
+  s_e5369d415d379b::t_64632c7f739e3c 84-98
+website/docs/developer-guide/agent-loop.md
+  s_e5369d415d379b::t_64632c7f739e3c 197
+plugins/aegis_attestation/SOUL.md
+  s_e5369d415d379b::t_64632c7f739e3c 1-123
+acp_adapter/edit_approval.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-278
+skills/devops/self-critique/SKILL.md
+  s_e5369d415d379b::t_64632c7f739e3c 1-110
+agent/agent_runtime_helpers.py
+  s_e5369d415d379b::t_64632c7f739e3c 1506-1509
+tests/hermes_cli/test_plugins_cmd.py
+  s_e5369d415d379b::t_64632c7f739e3c 789-848
+website/docs/user-guide/features/codex-app-server-runtime.md
+  s_e5369d415d379b::t_64632c7f739e3c 245
+tests/hermes_cli/test_kanban_diagnostics.py
+  s_e5369d415d379b::t_64632c7f739e3c 180,184-241,616-739
+tests/acp/test_mcp_e2e.py
+  s_e5369d415d379b::t_64632c7f739e3c 186,196-198
+plugins/aegis_attestation/README.md
+  s_e5369d415d379b::t_64632c7f739e3c 1-180
+tests/hermes_cli/test_auth_nous_provider.py
+  s_e5369d415d379b::t_64632c7f739e3c 3,5-6,131-135,147,151-153,155,175-631,841-933,1201-1205,1233-1236,1429-1458,1715-1750,1753-1757,1771-1774,1902
+website/docs/user-guide/configuring-models.md
+  s_e5369d415d379b::t_64632c7f739e3c 10
+hermes_cli/web_server.py
+  s_e5369d415d379b::t_64632c7f739e3c 1818-1822,1831-1835,1837-1841,1846,1848-1851,1858,1987-1991,2002,2021,2033-2037
+model_tools.py
+  s_e5369d415d379b::t_64632c7f739e3c 791-804
+tests/tools/test_voice_cli_integration.py
+  s_e5369d415d379b::t_64632c7f739e3c 127-216
+hermes_cli/proxy/server.py
+  s_e5369d415d379b::t_64632c7f739e3c 29,145,147-151,153-154,156-158,160-225
+hermes_cli/config.py
+  s_e5369d415d379b::t_64632c7f739e3c 874-877,1514-1518
+hermes_cli/kanban_db.py
+  s_e5369d415d379b::t_64632c7f739e3c 3363-3367,4327-4364,4366-4375,4382-4390,4392-4393,4396-4404,4438-4467,4523-4534,4589-4590,4726-4734
+acp_adapter/tools.py
+  s_e5369d415d379b::t_64632c7f739e3c 898,931-932,940-947,949-951,957-967
+tests/agent/test_skill_commands.py
+  s_e5369d415d379b::t_64632c7f739e3c 7-8,130-152
+agent/prompt_builder.py
+  s_e5369d415d379b::t_64632c7f739e3c 277-280
+plugins/aegis_attestation/plugin.yaml
+  s_e5369d415d379b::t_64632c7f739e3c 1-17
+hermes_cli/proxy/adapters/nous_portal.py
+  s_e5369d415d379b::t_64632c7f739e3c 3-10,20,22-23,25-28,31,54-55,82-101,110-127,133,140,146,156-157,167-173,175-185,188
+hermes_cli/doctor.py
+  s_e5369d415d379b::t_64632c7f739e3c 198-209,229,386,432,442-447,456,476,485,608,611-616,675,678-683,767,780,852,965,1039,1065,1067-1072,1107,1109-1114,1122-1127,1132-1137,1147-1152,1158-1163,1168-1173,1179-1184,1186-1190,1330,1678,1706,1747,1772-1777,1788,1790-1795,1807-1812,1814-1819,1842
+gateway/run.py
+  s_e5369d415d379b::t_64632c7f739e3c 8088-8090,8093,8101-8103,8106,8119-8123,8130-8137
+hermes_cli/auth.py
+  s_e5369d415d379b::t_64632c7f739e3c 14-19,44,76-91,94,1574-1822,3607-3685,3877-3879,3970-4059,4085,4101-4103,4109-4110,4119-4120,4165,4175,4187,4286-4293,4355-4376,4420-4421,4423-4429,4451-4467,4488-4489,4491-4502,4529-4530,4551-4552,4615-4624,4631,4641,4643,4655-4657,4672-4684,4703-4704,4716,4729-4743,4750-4757,4768-4786,4814-4816,4819-4824,4826-4832,4834,4837-4841,4877-4895,4922-4925,4927-4945,4977-4979,5000-5005,6684-6687,6702,6707,6777,6838,6865
+hermes_cli/plugins_cmd.py
+  s_e5369d415d379b::t_64632c7f739e3c 685-700,713-716,726-736
+tests/conftest.py
+  s_e5369d415d379b::t_64632c7f739e3c 190
+run_agent.py
+  s_e5369d415d379b::t_64632c7f739e3c 2631-2635,2640-2644
+agent/auxiliary_client.py
+  s_e5369d415d379b::t_64632c7f739e3c 766-767,1520,1533,1538-1542,1547-1551,2382-2388,2396-2397,2399-2408,2810-2813,2818,2892-3018,5012-5017,5019-5022,5038-5055,5065-5072,5374-5376,5378-5379,5391-5407,5423-5428
+tests/tools/test_session_search.py
+  s_e5369d415d379b::t_64632c7f739e3c 1,3-9,12,15,18-20,24-58,62,65-104,107-110,112,115-117,121,124-127,129-130,132-136,138-142,146,149-182,184-199,201-225,229-246,249-251,253-259,261,263,266-276,278,280,282-286,288,290,292-296,298,300-307,309,311-313,315-321,323,325,327,329-344,346,348,351-352,354-360,362-378,380-386,388-389,391,393-396,398-401
+tests/acp/test_server.py
+  s_e5369d415d379b::t_64632c7f739e3c 27,57-85,898,902,911,925
+plugins/aegis_attestation/tests/test_hook_trigger.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-314
+tests/acp/test_edit_approval.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-203
+plugins/aegis_attestation/llm_review.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-339
+cli.py
+  s_e5369d415d379b::t_64632c7f739e3c 10097,10100-10104,10106
+hermes_cli/kanban_diagnostics.py
+  s_e5369d415d379b::t_64632c7f739e3c 233-332,380-491,534-537,542,545-546,618-620,642-643,912,925,935-937,939,949-993,1009-1019
+hermes_cli/kanban.py
+  s_e5369d415d379b::t_64632c7f739e3c 1396-1398,1412,1440-1445
+tools/tts_tool.py
+  s_e5369d415d379b::t_64632c7f739e3c 2249,2303-2305
+tests/agent/test_system_prompt_restore.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-223
+website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
+  s_e5369d415d379b::t_64632c7f739e3c 856
+hermes_cli/voice.py
+  s_e5369d415d379b::t_64632c7f739e3c 782,784-788,790
+tests/acp/test_tools.py
+  s_e5369d415d379b::t_64632c7f739e3c 5,151,161-164,167,173-195,474-475,483-486,493,507-510
+agent/conversation_loop.py
+  s_e5369d415d379b::t_64632c7f739e3c 85-186,418
+plugins/aegis_attestation/tests/test_attestation.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-568
+tests/hermes_cli/test_proxy.py
+  s_e5369d415d379b::t_64632c7f739e3c 106,117-119,123,125,129,135-192,210,218-251,261,282,296-298,314,347-348,353,355,377-387,428-446,477-504
+tests/tools/test_aegis_review_tool.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-137
+tools/session_search_tool.py
+  s_e5369d415d379b::t_64632c7f739e3c 5-29,34,36-39,67-74,76-82,84-107,111,117-119,126,143,146,153-157,160,162-164,166-168,170-173,175-176,178,180-192,194-201,203,205-254,256-288,293,295,297-299,301-309,311-391,393-395,397-400,402-407,409-417,419-425,427-429,431-450,454,465-507,514-519,523-527,530-575,593-596,598-599
+tests/hermes_cli/test_web_oauth_dispatch.py
+  s_e5369d415d379b::t_64632c7f739e3c 22,27,36-61,78-80,102-206
+tests/run_agent/test_run_agent.py
+  s_e5369d415d379b::t_64632c7f739e3c 992-1013,1099-1132,3726
+plugins/aegis_attestation/HYBRID-GUIDE.md
+  s_e5369d415d379b::t_64632c7f739e3c 1-429
+tests/hermes_state/test_get_messages_around.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-148
+hermes_state.py
+  s_e5369d415d379b::t_64632c7f739e3c 28,1621-1818,2086,2099-2107,2116-2134,2173,2242
+website/docs/reference/tools-reference.md
+  s_e5369d415d379b::t_64632c7f739e3c 155
+plugins/aegis_attestation/__main__.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-16
+CONTRIBUTING.md
+  s_e5369d415d379b::t_64632c7f739e3c 175
+agent/tool_executor.py
+  s_e5369d415d379b::t_64632c7f739e3c 625-628
+website/docs/user-guide/features/fallback-providers.md
+  s_e5369d415d379b::t_64632c7f739e3c 296-344,403-412
+tests/hermes_cli/test_auth_commands.py
+  s_e5369d415d379b::t_64632c7f739e3c 110,231
+acp_adapter/server.py
+  s_e5369d415d379b::t_64632c7f739e3c 50-51,500-513,526-564,1050,1092-1095,1124-1127,1157-1161,1312,1317-1324,1336-1346,1376,1379,1403-1409,1437-1443,1866-1869,1871,1883-1891
+agent/skill_commands.py
+  s_e5369d415d379b::t_64632c7f739e3c 61,65-66,68,70-89
+plugins/aegis_attestation/__init__.py
+  s_e5369d415d379b::t_64632c7f739e3c 1-562
+website/docs/user-guide/sessions.md
+  s_e5369d415d379b::t_64632c7f739e3c 369,371,373-413,419,424-427
+docs/plans/2026-05-15-acp-zed-edit-approval-diffs.md
+  s_e5369d415d379b::t_64632c7f739e3c 1-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "7c228e9822c99eb171cb538e462309a9299baa71",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
