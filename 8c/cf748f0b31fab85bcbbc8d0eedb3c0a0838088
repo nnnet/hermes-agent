@@ -1,0 +1,23 @@
+tests/tools/test_mc_tools.py
+  s_e5369d415d379b::t_69be54a8913d77 1-188,191-192,195-199,202-206,209-240,243-250,253-270
+  s_e5369d415d379b::t_acef20366a930d 189-190,193-194,200-201,207-208
+  s_e5369d415d379b::t_45cfe66ee632ac 241-242,251-252
+tools/mc_tools.py
+  s_e5369d415d379b::t_57e5ab4187e091 1-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "8ccf748f0b31fab85bcbbc8d0eedb3c0a0838088",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
