@@ -1,0 +1,21 @@
+plugins/aegis_attestation/contrib/aegis-tick.sh
+  s_e5369d415d379b::t_f5197438d910ab 30-37
+  s_e5369d415d379b::t_159b2fbf5e0568 68-72
+  s_e5369d415d379b::t_03e3f121acd4c2 42,45-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "f584ff3341297ed3afe021fd4e887b5394178a55",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
