@@ -27,15 +27,23 @@ set -euo pipefail
 LOG_FILE="${AEGIS_LOG_FILE:-$HOME/.hermes/logs/aegis.log}"
 MODE="${AEGIS_TICK_MODE:-auto}"
 
+# Path to the hermes CLI INSIDE the docker container. Hermes ships in a
+# uv-managed virtualenv at /opt/hermes/.venv/; the global PATH inside the
+# container does NOT include venv/bin, so `docker exec hermes hermes ...`
+# would fail with status 127. Override via env if your container layout
+# differs.
+HERMES_BIN_DOCKER="${HERMES_BIN_DOCKER:-/opt/hermes/.venv/bin/hermes}"
+DOCKER_CONTAINER="${AEGIS_DOCKER_CONTAINER:-hermes}"
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # --- Detect mode -----------------------------------------------------------
 if [[ "$MODE" == "auto" ]]; then
-  # Prefer docker exec if a 'hermes' container exists and is running.
+  # Prefer docker exec if the configured container exists and is running.
   # Otherwise fall back to host CLI.
   if command -v docker >/dev/null 2>&1 && \
-     docker ps --filter "name=^hermes$" --format '{{.Names}}' \
-       2>/dev/null | grep -q '^hermes$'; then
+     docker ps --filter "name=^${DOCKER_CONTAINER}$" --format '{{.Names}}' \
+       2>/dev/null | grep -q "^${DOCKER_CONTAINER}$"; then
     MODE="docker"
   else
     MODE="host"
@@ -57,8 +65,11 @@ case "$MODE" in
     hermes aegis tick --json >> "$LOG_FILE" 2>&1
     ;;
   docker)
-    # docker exec invocation — works for the canonical 'hermes' container.
-    docker exec hermes hermes aegis tick --json >> "$LOG_FILE" 2>&1
+    # docker exec invocation. Hermes CLI lives inside a uv venv whose
+    # bin/ is NOT on the container's $PATH — use the absolute venv path
+    # (overridable via HERMES_BIN_DOCKER env var).
+    docker exec "$DOCKER_CONTAINER" "$HERMES_BIN_DOCKER" aegis tick --json \
+      >> "$LOG_FILE" 2>&1
     ;;
   *)
     echo "[$ts] aegis-tick FAIL: unknown AEGIS_TICK_MODE=$MODE" >> "$LOG_FILE"
