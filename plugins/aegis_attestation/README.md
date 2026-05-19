@@ -3,6 +3,17 @@
 **Tier-A deterministic kanban-deliverable attestation.** No LLM, no network,
 stdlib only.
 
+> **v0.2.0 — hybrid trigger.** The plugin now fires INSTANTLY via a
+> `post_tool_call` hook the moment a worker calls
+> `kanban_block(reason='review-required: ...')`. The CLI tick (cron /
+> systemd) remains as a catch-up safety net for handoffs the hook misses
+> (Web UI / CLI / dispatcher blocks). See **[`HYBRID-GUIDE.md`](HYBRID-GUIDE.md)**
+> for full operator documentation.
+>
+> Ready-to-install systemd-user units are in [`contrib/`](contrib/):
+> `aegis-tick.sh` (wrapper, docker-aware), `aegis-tick.service`,
+> `aegis-tick.timer` (5-min interval — fine since hook covers 99%).
+
 ## Quickstart
 
 ### 1. Enable the plugin

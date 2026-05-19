@@ -499,6 +499,187 @@ def _resolve_workspace_for_task(
     return None
 
 
+def _process_one_task(
+    conn: sqlite3.Connection,
+    kanban_db: Any,
+    task: Any,
+    board: Optional[str],
+    cfg: AegisConfig,
+    summary: TickSummary,
+) -> None:
+    """Why: Both batch (``tick()``) and single-task (``process_task_id()``)
+    entrypoints need identical per-task semantics — extract the inner loop
+    body so they cannot drift. Also makes the hybrid hook trigger trivially
+    reuse the exact same idempotency / handoff-parsing logic as cron.
+    What: For one ``task`` row already on a live SQLite ``conn``:
+    1) skip if reason prefix doesn't match,
+    2) skip if attestation comment already present (idempotent),
+    3) parse handoff JSON from comments,
+    4) resolve workspace, verify deliverables, sign, comment, unblock.
+    Mutates ``summary`` counters and appends to ``summary.results``.
+    Test: ``tests/test_attestation.py`` exercises the path through ``tick``;
+    ``tests/test_hook_trigger.py`` calls this via ``process_task_id``.
+    """
+    summary.inspected += 1
+    task_id = getattr(task, "id", "<unknown>")
+
+    # Filter: reason prefix lives on the most recent 'blocked' event payload.
+    if not _task_matches_reason_prefix(conn, kanban_db, task, cfg.reason_prefix):
+        summary.skipped += 1
+        return
+
+    try:
+        comments = kanban_db.list_comments(conn, task_id)
+    except Exception as exc:
+        logger.warning("Aegis: list_comments(%s) failed: %s; skipping", task_id, exc)
+        summary.skipped += 1
+        return
+
+    # Idempotency: re-running the hook OR cron on an already-attested task
+    # is a no-op. Important because the hybrid trigger model (hook + cron
+    # catch-up) WILL race on the same task occasionally.
+    if has_existing_attestation(comments):
+        logger.debug("Aegis: task %s already has an attestation comment", task_id)
+        summary.skipped += 1
+        return
+
+    handoff = parse_handoff(comments, marker=cfg.handoff_marker)
+    if handoff is None:
+        logger.info("Aegis: task %s has no parseable handoff; skipping", task_id)
+        summary.skipped += 1
+        return
+
+    workspace = _resolve_workspace_for_task(task, cfg, board)
+    if workspace is None:
+        summary.skipped += 1
+        return
+
+    if not workspace.exists():
+        logger.info(
+            "Aegis: task %s workspace %s does not exist; recording FAIL",
+            task_id, workspace,
+        )
+        result = AttestationResult(
+            task_id=task_id,
+            ok=False,
+            reason="workspace_missing",
+            handoff_keys=sorted(handoff.keys()),
+        )
+    else:
+        result = attest_task(task_id, workspace, handoff, cfg)
+
+    # Sign
+    result.signature = sign_payload(result.to_payload(), cfg.hmac_secret_env)
+
+    # Write attestation comment
+    try:
+        kanban_db.add_comment(
+            conn,
+            task_id,
+            ATTESTATION_AUTHOR,
+            format_comment_body(result),
+        )
+        summary.attested += 1
+        if result.ok:
+            summary.passed += 1
+        else:
+            summary.failed += 1
+    except Exception as exc:
+        logger.error("Aegis: failed to write attestation comment for %s: %s", task_id, exc)
+        return
+
+    # Optional unblock
+    if result.ok and cfg.auto_unblock_on_pass:
+        try:
+            if kanban_db.unblock_task(conn, task_id):
+                summary.unblocked += 1
+                logger.info("Aegis: task %s passed attestation; unblocked", task_id)
+        except Exception as exc:
+            logger.warning("Aegis: unblock_task(%s) failed: %s", task_id, exc)
+
+    summary.results.append(result)
+
+
+def process_task_id(
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+    cfg: Optional[AegisConfig] = None,
+    db_path: Optional[Path] = None,
+) -> TickSummary:
+    """Why: Hybrid trigger — invoked from the ``post_tool_call`` hook the
+    moment a worker fires ``kanban_block(reason='review-required: ...')``.
+    Doing one task immediately (instead of waiting up to 60s for the cron
+    tick) cuts the perceived handoff → attestation latency from "minute" to
+    "millisecond". The cron tick remains as a safety net for tasks the hook
+    missed (worker crashed, plugin not loaded, kanban_block invoked outside
+    the agent process, etc.).
+    What: Loads kanban_db lazily, opens the same DB ``tick`` would, fetches
+    a single task row by id, then runs ``_process_one_task`` exactly as
+    the batch path would. Returns a ``TickSummary`` so callers (hook,
+    tests) can introspect what happened.
+    Idempotent: if the task already has an attestation comment, this is a
+    no-op — safe to race with cron.
+    Test: ``tests/test_hook_trigger.py`` constructs a synthetic kanban,
+    fires the hook, asserts ``summary.attested == 1`` and a second call
+    returns ``summary.skipped == 1``.
+    """
+    cfg = cfg or AegisConfig()
+    summary = TickSummary()
+
+    try:
+        from hermes_cli import kanban_db  # type: ignore  # noqa: PLC0415
+    except Exception as exc:
+        logger.error("Aegis: cannot import hermes_cli.kanban_db: %s", exc)
+        return summary
+
+    resolved_db = db_path or kanban_db.kanban_db_path(board)
+    if not resolved_db.exists():
+        logger.warning("Aegis: kanban db not found at %s; nothing to do", resolved_db)
+        return summary
+
+    conn = kanban_db.connect(resolved_db)
+    try:
+        # ``get_task`` should be cheaper than list_tasks(status='blocked')
+        # because we already know the id. Fall back gracefully if the
+        # function isn't available in this kanban_db version.
+        get_task = getattr(kanban_db, "get_task", None)
+        if get_task is not None:
+            try:
+                task = get_task(conn, task_id)
+            except TypeError:
+                # Some kanban_db versions take only ``task_id`` (no conn).
+                task = get_task(task_id)
+        else:
+            # Fallback: enumerate blocked tasks and pick by id.
+            all_blocked = kanban_db.list_tasks(conn, status="blocked")
+            task = next((t for t in all_blocked if getattr(t, "id", None) == task_id), None)
+
+        if task is None:
+            logger.info(
+                "Aegis: task %s not found in kanban (board=%s); nothing to do",
+                task_id, board,
+            )
+            return summary
+
+        # Only attest tasks that are actually in 'blocked' state. The hook
+        # fires the instant kanban_block returns, so the worker may or may
+        # not have transitioned yet depending on the gateway dispatch
+        # ordering. Defer to cron on race.
+        if getattr(task, "status", None) != "blocked":
+            logger.debug(
+                "Aegis: task %s is not blocked (status=%s); deferring to cron",
+                task_id, getattr(task, "status", None),
+            )
+            return summary
+
+        _process_one_task(conn, kanban_db, task, board, cfg, summary)
+    finally:
+        conn.close()
+
+    return summary
+
+
 def tick(
     *,
     board: Optional[str] = None,
@@ -510,10 +691,9 @@ def tick(
     DB read, per-task verification, comment write-back, and (optional)
     unblock — all in one transaction-per-task scope so a crash mid-pass
     leaves the DB consistent.
-    What: Loads kanban_db lazily, lists blocked tasks, runs attest_task
-    for each that has a matching handoff and no existing attest comment,
-    writes the result as a comment authored 'aegis-attest', and unblocks
-    on pass when cfg.auto_unblock_on_pass.
+    What: Loads kanban_db lazily, lists blocked tasks, runs ``_process_one_task``
+    (shared with the hook trigger) for each, writes the attestation as a
+    'aegis-attest' comment, and unblocks on pass when ``cfg.auto_unblock_on_pass``.
     Test: Manual via `hermes aegis tick` on a kanban with one synthetic
     blocked task; integration test would mock kanban_db functions.
     """
@@ -541,81 +721,7 @@ def tick(
         return summary
 
     for task in blocked_tasks:
-        summary.inspected += 1
-        task_id = getattr(task, "id", "<unknown>")
-
-        # Filter: reason prefix lives on the most recent 'blocked' event payload.
-        if not _task_matches_reason_prefix(conn, kanban_db, task, cfg.reason_prefix):
-            summary.skipped += 1
-            continue
-
-        try:
-            comments = kanban_db.list_comments(conn, task_id)
-        except Exception as exc:
-            logger.warning("Aegis: list_comments(%s) failed: %s; skipping", task_id, exc)
-            summary.skipped += 1
-            continue
-
-        if has_existing_attestation(comments):
-            logger.debug("Aegis: task %s already has an attestation comment", task_id)
-            summary.skipped += 1
-            continue
-
-        handoff = parse_handoff(comments, marker=cfg.handoff_marker)
-        if handoff is None:
-            logger.info("Aegis: task %s has no parseable handoff; skipping", task_id)
-            summary.skipped += 1
-            continue
-
-        workspace = _resolve_workspace_for_task(task, cfg, board)
-        if workspace is None:
-            summary.skipped += 1
-            continue
-
-        if not workspace.exists():
-            logger.info(
-                "Aegis: task %s workspace %s does not exist; recording FAIL",
-                task_id, workspace,
-            )
-            result = AttestationResult(
-                task_id=task_id,
-                ok=False,
-                reason="workspace_missing",
-                handoff_keys=sorted(handoff.keys()),
-            )
-        else:
-            result = attest_task(task_id, workspace, handoff, cfg)
-
-        # Sign
-        result.signature = sign_payload(result.to_payload(), cfg.hmac_secret_env)
-
-        # Write attestation comment
-        try:
-            kanban_db.add_comment(
-                conn,
-                task_id,
-                ATTESTATION_AUTHOR,
-                format_comment_body(result),
-            )
-            summary.attested += 1
-            if result.ok:
-                summary.passed += 1
-            else:
-                summary.failed += 1
-        except Exception as exc:
-            logger.error("Aegis: failed to write attestation comment for %s: %s", task_id, exc)
-            continue
-
-        # Optional unblock
-        if result.ok and cfg.auto_unblock_on_pass:
-            try:
-                if kanban_db.unblock_task(conn, task_id):
-                    summary.unblocked += 1
-                    logger.info("Aegis: task %s passed attestation; unblocked", task_id)
-            except Exception as exc:
-                logger.warning("Aegis: unblock_task(%s) failed: %s", task_id, exc)
-
-        summary.results.append(result)
+        _process_one_task(conn, kanban_db, task, board, cfg, summary)
 
     conn.close()
     return summary

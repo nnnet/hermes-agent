@@ -6,14 +6,29 @@ reviewer's eyeball-pass. Pure stdlib, no LLM, no network — runs in
 microseconds per task and produces a tamper-evident (HMAC) comment that
 anyone can re-verify.
 
-What: Registers the `hermes aegis` CLI subcommand (with `tick`, `status`,
-and `config` sub-subcommands). The plugin does NOT start a background
-thread on session-start — operators are expected to invoke `hermes aegis
-tick` from cron / systemd / `make` so the lifecycle stays explicit.
+What: Registers TWO complementary entry points:
 
-Test: `hermes aegis tick --board <slug>` on a board with a synthetic
+  1. ``hermes aegis`` CLI subcommand (tick / status / config) — manual
+     invocation, host cron, systemd timer, or the built-in Hermes cron
+     scheduler. Catch-up safety net.
+
+  2. ``post_tool_call`` plugin hook — fires the instant a worker runs
+     ``kanban_block(reason='review-required: ...')`` inside the agent
+     process. Cuts handoff → attestation latency from "up to a minute"
+     (cron) to "milliseconds" (hook). Hook is fully idempotent and races
+     safely with cron (``has_existing_attestation`` short-circuits).
+
+The hybrid model (hook for instant reaction + cron for catch-up) was
+chosen over pure-cron because:
+- pure cron has up to 60s latency before the worker's hand-off is verified
+- pure hook misses tasks where ``kanban_block`` is invoked outside the
+  agent process (Web UI, ``hermes kanban block`` CLI, dispatcher cleanup)
+- combining the two gives both responsiveness and safety with zero new
+  external dependencies.
+
+Test: ``hermes aegis tick --board <slug>`` on a board with a synthetic
 blocked task; see plugins/aegis_attestation/tests/ for unit coverage
-(`pytest plugins/aegis_attestation/tests/ -v -o "addopts="`).
+(``pytest plugins/aegis_attestation/tests/ -v -o "addopts="``).
 """
 
 from __future__ import annotations
@@ -260,6 +275,209 @@ def _config_to_dict(cfg: _att.AegisConfig) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# post_tool_call hook — instant trigger on kanban_block(review-required:)
+# ---------------------------------------------------------------------------
+
+# When a tool call result fields contain these markers the hook treats the
+# call as a review-required handoff. Kept here (not in attestation.py) so
+# the hook can decide BEFORE touching kanban_db — important because the
+# hook fires for every tool call in the agent process and we want a fast
+# early-exit for the 99% case.
+_HOOK_TARGET_TOOL = "kanban_block"
+
+
+def _extract_block_reason(args: Any, result: Any) -> Optional[str]:
+    """Why: ``kanban_block`` was called via the gateway tool-dispatch path,
+    so the reason can live in either the input ``args`` (most common) or
+    the rendered ``result`` text. We need a tolerant extractor because the
+    arg-shape is normalised by the framework slightly differently across
+    versions (dict vs. JSON-string vs. argparse Namespace).
+    What: Tries ``args['reason']``, ``args.get('args',{}).get('reason')``,
+    JSON-decode of a string ``args``, then falls back to scanning the
+    ``result`` body for the canonical 'review-required:' prefix.
+    Test: Each branch is unit-tested in ``test_hook_trigger.py``.
+    """
+    # 1. args is a dict-like — most likely shape from gateway dispatch.
+    if isinstance(args, dict):
+        reason = args.get("reason")
+        if isinstance(reason, str) and reason:
+            return reason
+        # Nested under 'args' key (some hooks pass the full tool call object).
+        nested = args.get("args")
+        if isinstance(nested, dict):
+            reason = nested.get("reason")
+            if isinstance(reason, str) and reason:
+                return reason
+
+    # 2. args is a JSON string (rare but seen in older shims).
+    if isinstance(args, str):
+        try:
+            decoded = json.loads(args)
+            if isinstance(decoded, dict):
+                reason = decoded.get("reason")
+                if isinstance(reason, str) and reason:
+                    return reason
+        except (ValueError, TypeError):
+            pass
+
+    # 3. Fallback: scan the result text for the canonical prefix. This
+    # catches the case where the framework redacted args but the result
+    # body echoes the reason back (typical pattern).
+    if isinstance(result, str):
+        for line in result.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("review-required:"):
+                return stripped
+
+    return None
+
+
+def _extract_task_and_board(args: Any) -> tuple[Optional[str], Optional[str]]:
+    """Why: ``kanban_block`` needs a task id; the hook ALSO often gets the
+    board slug from the same args (gateway-dispatch shape). Pull both with
+    a single helper so the callback stays linear.
+    What: Mirrors ``_extract_block_reason`` shape-handling: dict, nested
+    'args' dict, JSON-string. Returns (task_id, board) — either may be None
+    if not present (caller falls back to kanban_db active board).
+    Test: ``test_extract_task_and_board`` covers all three input shapes.
+    """
+    def _from_dict(d: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        tid = d.get("task_id") or d.get("id")
+        brd = d.get("board")
+        return (
+            tid if isinstance(tid, str) and tid else None,
+            brd if isinstance(brd, str) and brd else None,
+        )
+
+    if isinstance(args, dict):
+        tid, brd = _from_dict(args)
+        if tid or brd:
+            return tid, brd
+        nested = args.get("args")
+        if isinstance(nested, dict):
+            return _from_dict(nested)
+
+    if isinstance(args, str):
+        try:
+            decoded = json.loads(args)
+            if isinstance(decoded, dict):
+                return _from_dict(decoded)
+        except (ValueError, TypeError):
+            pass
+
+    return (None, None)
+
+
+def _on_post_tool_call(
+    *,
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    **_: Any,
+) -> None:
+    """Why: Instant attestation trigger — fires the moment a worker writes
+    ``kanban_block(reason='review-required: ...')``. Without this hook the
+    worker's handoff would sit unverified until the next cron tick (up to
+    60s); with it, the attestation comment is posted in the same agent
+    turn that produced the handoff. Hook MUST be cheap when the tool is
+    NOT ``kanban_block`` because it runs on every tool call in the process.
+    What: Quick early-exit on tool name; load YAML config; extract reason
+    and task/board from args; if the reason carries the configured prefix,
+    delegate to ``attestation.process_task_id`` which is idempotent.
+    Errors are caught and logged — a buggy hook must NEVER break the
+    worker's tool-call dispatch.
+    Test: ``tests/test_hook_trigger.py`` patches ``process_task_id`` and
+    asserts it was called with the expected ``(task_id, board, cfg)``
+    when ``tool_name='kanban_block'`` and reason starts with the prefix.
+    """
+    # --- fast early-exit (99% of tool calls) ---
+    if tool_name != _HOOK_TARGET_TOOL:
+        return
+
+    try:
+        # Build effective config: same source-of-truth as the CLI tick so
+        # operators can tweak reason_prefix in one place and have both
+        # paths honour it.
+        section = _load_yaml_section()
+        kwargs: dict[str, Any] = {}
+        if isinstance(section.get("reason_prefix"), str):
+            kwargs["reason_prefix"] = section["reason_prefix"]
+        if isinstance(section.get("handoff_marker"), str):
+            kwargs["handoff_marker"] = section["handoff_marker"]
+        if isinstance(section.get("required_keys"), (list, tuple)):
+            kwargs["required_keys"] = tuple(
+                str(k) for k in section["required_keys"] if isinstance(k, str)
+            )
+        if isinstance(section.get("auto_unblock_on_pass"), bool):
+            kwargs["auto_unblock_on_pass"] = section["auto_unblock_on_pass"]
+        if isinstance(section.get("hmac_secret_env"), str):
+            kwargs["hmac_secret_env"] = section["hmac_secret_env"]
+        wro = section.get("workspace_root_override")
+        if isinstance(wro, str) and wro.strip():
+            kwargs["workspace_root_override"] = Path(wro).expanduser()
+
+        # Operator escape hatch: ``hook_enabled: false`` in YAML disables
+        # the instant trigger but leaves cron + manual CLI active. Useful
+        # for debugging or when the hook is producing duplicate work for
+        # some reason.
+        if section.get("hook_enabled") is False:
+            logger.debug("Aegis hook: disabled via aegis_attestation.hook_enabled=false")
+            return
+
+        cfg = _att.AegisConfig(**kwargs)
+
+        reason = _extract_block_reason(args, result)
+        if reason is None:
+            logger.debug("Aegis hook: kanban_block call without parseable reason; skipping")
+            return
+
+        if not reason.lstrip().startswith(cfg.reason_prefix):
+            logger.debug(
+                "Aegis hook: reason %r does not match prefix %r; skipping",
+                reason[:60], cfg.reason_prefix,
+            )
+            return
+
+        # Pull task_id / board from args; fall back to the hook kwarg
+        # (``task_id``) which the agent core passes as the currently-active
+        # kanban task in scope.
+        arg_task_id, board = _extract_task_and_board(args)
+        target_task_id = arg_task_id or task_id
+        if not target_task_id:
+            logger.warning(
+                "Aegis hook: kanban_block with review-required reason but no "
+                "task_id resolvable (args=%r); skipping (cron will catch up)",
+                args,
+            )
+            return
+
+        logger.info(
+            "Aegis hook: kanban_block(review-required) detected on task %s "
+            "(board=%s) — running instant attestation",
+            target_task_id, board,
+        )
+        summary = _att.process_task_id(target_task_id, board=board, cfg=cfg)
+        logger.info(
+            "Aegis hook: task=%s attested=%d passed=%d failed=%d "
+            "skipped=%d unblocked=%d",
+            target_task_id,
+            summary.attested, summary.passed, summary.failed,
+            summary.skipped, summary.unblocked,
+        )
+    except Exception as exc:
+        # NEVER let a hook exception break tool dispatch. Log and move on —
+        # cron tick will catch this task on its next pass.
+        logger.exception(
+            "Aegis hook: unexpected error on kanban_block (task_id=%s); "
+            "deferring to cron catch-up. %s",
+            task_id, exc,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Plugin entrypoints
 # ---------------------------------------------------------------------------
 
@@ -280,12 +498,22 @@ def cli_main(argv: Optional[list[str]] = None) -> int:
 
 
 def register(ctx: Any) -> None:
-    """Why: Hermes plugin loader calls this with a PluginContext; we hook
-    `register_cli_command` to expose `hermes aegis ...`.
-    What: Wires the argparse subtree built by _build_argparse.
-    Test: After ctx.register_cli_command is mocked, assert called with
-    name='aegis' and setup_fn=_build_argparse.
+    """Why: Hermes plugin loader calls this with a PluginContext; we wire
+    BOTH the CLI command (``hermes aegis ...``) AND the ``post_tool_call``
+    hook for the hybrid (instant + cron catch-up) trigger model.
+    What: Two registrations:
+      1. ``register_cli_command`` — exposes ``hermes aegis tick/status/config``.
+      2. ``register_hook("post_tool_call", _on_post_tool_call)`` — fires
+         instant attestation when a worker calls
+         ``kanban_block(reason='review-required: ...')``.
+    Both registrations degrade gracefully if the PluginContext API is older
+    than expected (older Hermes versions). The plugin's behaviour falls
+    back to: CLI-only if hook API missing; ``python -m`` fallback if both
+    missing.
+    Test: ``test_register`` mocks ctx, asserts both register_cli_command
+    AND register_hook were called.
     """
+    # --- 1. CLI command ---
     try:
         ctx.register_cli_command(
             name="aegis",
@@ -300,10 +528,35 @@ def register(ctx: Any) -> None:
         )
         logger.debug("aegis-attestation: registered `hermes aegis` CLI command")
     except AttributeError:
-        # Older plugin loaders may not expose register_cli_command — degrade
-        # gracefully so the plugin still imports cleanly. Operators can fall
-        # back to `python -m hermes_plugins.aegis_attestation`.
         logger.warning(
             "PluginContext.register_cli_command unavailable; "
             "aegis-attestation reachable only via `python -m hermes_plugins.aegis_attestation`"
+        )
+
+    # --- 2. post_tool_call hook for instant trigger ---
+    # Operator may disable the hook entirely via
+    # ``aegis_attestation.hook_enabled: false`` in ~/.hermes/config.yaml.
+    # The check inside ``_on_post_tool_call`` honours that flag per-call so
+    # operators can toggle without a Hermes restart. We still register here
+    # because the registration itself is cheap.
+    try:
+        register_hook = getattr(ctx, "register_hook", None)
+        if register_hook is None:
+            logger.warning(
+                "PluginContext.register_hook unavailable; aegis-attestation "
+                "instant trigger disabled — cron will still catch handoffs "
+                "but with up to 60s latency"
+            )
+        else:
+            register_hook("post_tool_call", _on_post_tool_call)
+            logger.debug(
+                "aegis-attestation: registered post_tool_call hook for instant "
+                "attestation on kanban_block(review-required)"
+            )
+    except Exception as exc:
+        # Defensive: never let a broken hook-registration crash the loader.
+        # Plugin still works in cron-only mode.
+        logger.exception(
+            "aegis-attestation: failed to register post_tool_call hook (%s); "
+            "falling back to cron-only mode", exc,
         )
