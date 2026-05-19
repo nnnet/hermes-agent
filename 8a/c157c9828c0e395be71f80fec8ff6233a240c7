@@ -1,0 +1,27 @@
+plugins/aegis_attestation/README.md
+  s_e5369d415d379b::t_c2299f3c39fba2 6-16
+plugins/aegis_attestation/contrib/aegis-tick.service
+  s_e5369d415d379b::t_b244a955204daa 1-39
+plugins/aegis_attestation/contrib/aegis-tick.sh
+  s_e5369d415d379b::t_207374990091f3 1-71
+plugins/aegis_attestation/contrib/aegis-tick.timer
+  s_e5369d415d379b::t_0bce79d18793b5 1-30
+plugins/aegis_attestation/HYBRID-GUIDE.md
+  s_e5369d415d379b::t_ede89190153573 1-429
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "8ac157c9828c0e395be71f80fec8ff6233a240c7",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
