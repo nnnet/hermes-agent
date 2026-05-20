@@ -838,3 +838,71 @@ class TestMcTaskComment:
                 {"task_id": 1, "content": "x"}, run_id="r",
             )
         assert out["ok"] is True
+
+
+class TestMcCostSummary:
+    def test_validates_timeframe(self, mc_tools):
+        out = mc_tools._handle_mc_cost_summary({"timeframe": "yearly"})
+        assert isinstance(out, str) and "timeframe" in out
+
+    def test_validates_threshold_type(self, mc_tools):
+        out = mc_tools._handle_mc_cost_summary({"threshold_usd": "five"})
+        assert isinstance(out, str) and "numeric" in out
+
+    def test_validates_group(self, mc_tools):
+        out = mc_tools._handle_mc_cost_summary({"group": "random"})
+        assert isinstance(out, str) and "group" in out
+
+    def test_happy_path_summary_only(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={
+            "summary": {"totalTokens": 1500, "totalCost": 0.42,
+                        "requestCount": 7},
+            "recordCount": 7, "timeframe": "all",
+        }) as p:
+            out = mc_tools._handle_mc_cost_summary({})
+        assert p.call_args.args[0] == "/api/tokens?action=stats&timeframe=all"
+        assert out["ok"] is True
+        assert out["total_cost_usd"] == 0.42
+        assert out["total_tokens"] == 1500
+        assert out["request_count"] == 7
+        assert "by_agent" not in out
+        assert "alert" not in out
+
+    def test_threshold_triggers_alert(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={
+            "summary": {"totalCost": 1.5, "totalTokens": 5000, "requestCount": 10},
+        }):
+            out = mc_tools._handle_mc_cost_summary({"threshold_usd": 1.0})
+        assert out["alert"] is True
+        assert out["over_threshold"] is True
+        assert out["threshold_usd"] == 1.0
+
+    def test_threshold_no_alert(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={
+            "summary": {"totalCost": 0.5, "totalTokens": 100, "requestCount": 2},
+        }):
+            out = mc_tools._handle_mc_cost_summary({"threshold_usd": 1.0})
+        assert out["alert"] is False
+
+    def test_group_by_agent_sorts_desc(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={
+            "summary": {"totalCost": 1.0},
+            "agents": {
+                "aegis": {"totalCost": 0.1, "totalTokens": 100, "requestCount": 1},
+                "architect": {"totalCost": 0.7, "totalTokens": 1000, "requestCount": 5},
+                "linter": {"totalCost": 0.2, "totalTokens": 200, "requestCount": 2},
+            },
+        }):
+            out = mc_tools._handle_mc_cost_summary({"group": "agent"})
+        names = [r["agent"] for r in out["by_agent"]]
+        assert names == ["architect", "linter", "aegis"]
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"summary": {}}):
+            out = mc_tools._handle_mc_cost_summary({}, task_id="t1")
+        assert out["ok"] is True

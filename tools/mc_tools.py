@@ -1162,3 +1162,121 @@ registry.register(
     check_fn=_check_mc_mode,
     emoji="💬",
 )
+
+
+# ---------------------------------------------------------------------------
+# Cost tracking (Phase 4) — query MC's GET /api/tokens?action=stats and
+# return a flat summary so chiefs can periodically check spend and
+# escalate before the operator finds out from a $$$ surprise.
+# ---------------------------------------------------------------------------
+
+def _handle_mc_cost_summary(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Summarise MC token usage. Optional filters:
+      - timeframe: all | day | week | month  (default: all)
+      - threshold_usd: float; if total_cost > threshold, alert=True in result
+      - group: 'agent' | 'model' | None — if set, return per-group breakdown
+    """
+    timeframe = (args.get("timeframe") or "all").lower()
+    if timeframe not in ("all", "day", "week", "month"):
+        return tool_error("mc_cost_summary: timeframe must be one of: all, day, week, month")
+    threshold = args.get("threshold_usd")
+    if threshold is not None and not isinstance(threshold, (int, float)):
+        return tool_error("mc_cost_summary: threshold_usd must be numeric if provided")
+    group = args.get("group")
+    if group is not None and group not in ("agent", "model"):
+        return tool_error("mc_cost_summary: group must be 'agent' or 'model' if provided")
+
+    try:
+        raw = _mc_get(f"/api/tokens?action=stats&timeframe={timeframe}")
+    except RuntimeError as e:
+        return tool_error(f"mc_cost_summary: {e}")
+
+    summary = raw.get("summary") or {}
+    total_cost = float(summary.get("totalCost") or 0)
+    total_tokens = int(summary.get("totalTokens") or 0)
+    request_count = int(summary.get("requestCount") or 0)
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "timeframe": timeframe,
+        "record_count": raw.get("recordCount"),
+        "total_cost_usd": round(total_cost, 4),
+        "total_tokens": total_tokens,
+        "request_count": request_count,
+    }
+
+    if threshold is not None:
+        result["threshold_usd"] = float(threshold)
+        result["over_threshold"] = total_cost > float(threshold)
+        result["alert"] = total_cost > float(threshold)
+
+    if group == "agent":
+        agents = raw.get("agents") or {}
+        result["by_agent"] = sorted(
+            (
+                {"agent": k, "cost_usd": round(float(v.get("totalCost") or 0), 4),
+                 "tokens": int(v.get("totalTokens") or 0),
+                 "requests": int(v.get("requestCount") or 0)}
+                for k, v in agents.items()
+            ),
+            key=lambda r: r["cost_usd"], reverse=True,
+        )[:20]
+    elif group == "model":
+        models = raw.get("models") or {}
+        result["by_model"] = sorted(
+            (
+                {"model": k, "cost_usd": round(float(v.get("totalCost") or 0), 4),
+                 "tokens": int(v.get("totalTokens") or 0),
+                 "requests": int(v.get("requestCount") or 0)}
+                for k, v in models.items()
+            ),
+            key=lambda r: r["cost_usd"], reverse=True,
+        )[:20]
+
+    return result
+
+
+MC_COST_SUMMARY_SCHEMA = {
+    "name": "mc_cost_summary",
+    "description": (
+        "Get an MC token spend summary. Returns total_cost_usd, "
+        "total_tokens, request_count for the selected timeframe. "
+        "Optional `threshold_usd` flips an `alert` bool to true when "
+        "total exceeds it (useful for chief periodic cost checks). "
+        "Optional `group='agent'|'model'` adds a top-20 breakdown. "
+        "Backed by MC's GET /api/tokens?action=stats."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "timeframe": {
+                "type": "string",
+                "enum": ["all", "day", "week", "month"],
+                "description": "Default: all. Filters records by created_at.",
+            },
+            "threshold_usd": {
+                "type": "number",
+                "description": (
+                    "If set, response includes `alert: true` when "
+                    "total_cost_usd > threshold."
+                ),
+            },
+            "group": {
+                "type": "string",
+                "enum": ["agent", "model"],
+                "description": "Add a per-group cost breakdown (top 20).",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+registry.register(
+    name="mc_cost_summary",
+    toolset="kanban",
+    schema=MC_COST_SUMMARY_SCHEMA,
+    handler=_handle_mc_cost_summary,
+    check_fn=_check_mc_mode,
+    emoji="💰",
+)
