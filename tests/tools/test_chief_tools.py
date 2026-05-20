@@ -118,6 +118,47 @@ def test_chief_spawn_rejects_unknown_parent(hermes_env):
     assert r.get("error") and "parent_chief_id" in r["error"]
 
 
+def test_chief_spawn_accepts_profile_override(hermes_env, monkeypatch, tmp_path):
+    """`profile=…` arg routes the initial task to a non-default chief."""
+    chief_tools, kanban_db = hermes_env
+    # Pre-seed an alternate profile dir so the existence check passes.
+    home = Path(os.environ["HERMES_HOME"])
+    alt = home / "profiles" / "mc-pm-chief"
+    alt.mkdir(parents=True, exist_ok=True)
+    (alt / "config.yaml").write_text("toolsets: [kanban]\n", encoding="utf-8")
+
+    out = _parse(chief_tools._handle_chief_spawn({
+        "name": "mc-proj",
+        "brief": "drive an MC project to completion",
+        "profile": "mc-pm-chief",
+    }))
+    assert out["ok"] is True
+    chief_id = out["chief_id"]
+
+    conn = kanban_db.connect(board=chief_id)
+    try:
+        row = dict(conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?",
+            (out["initial_task"],),
+        ).fetchone())
+    finally:
+        conn.close()
+    # Assignee = the override, NOT the default 'chief-manager'.
+    assert row["assignee"] == "mc-pm-chief"
+
+
+def test_chief_spawn_rejects_unknown_profile(hermes_env):
+    """Typo'd `profile=` returns a clear tool_error, doesn't silently fall
+    back to chief-manager (which would mask the operator's intent)."""
+    chief_tools, _ = hermes_env
+    r = _parse(chief_tools._handle_chief_spawn({
+        "name": "x",
+        "brief": "y",
+        "profile": "definitely-not-a-real-profile",
+    }))
+    assert r.get("error") and "profile" in r["error"].lower()
+
+
 def test_chief_spawn_recursion_depth_guard(hermes_env):
     chief_tools, kanban_db = hermes_env
     # Create three nested chiefs — fourth should be rejected.

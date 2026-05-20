@@ -64,6 +64,18 @@ def _profile_has_kanban_toolset() -> bool:
         return False
 
 
+def _profile_dir_exists(name: str) -> bool:
+    """Cheap on-disk check that ~/.hermes/profiles/<name>/config.yaml exists.
+    Used by chief_spawn(profile=…) to fail fast on typos before the
+    dispatcher silently buckets the task as `skipped_nonspawnable`.
+    """
+    if not name or any(c in name for c in ("/", "\\", "..", "\x00")):
+        return False
+    hermes_home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    profile_cfg = os.path.join(hermes_home, "profiles", name, "config.yaml")
+    return os.path.isfile(profile_cfg)
+
+
 def _check_chief_mode() -> bool:
     """Chief tools available to:
       1. Dispatcher-spawned chief workers (HERMES_KANBAN_TASK set + we are
@@ -247,6 +259,24 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
     if err:
         return tool_error(err)
 
+    # Optional profile override — lets the operator route a project to a
+    # specialised chief (e.g. `mc-pm-chief` which drives Mission Control)
+    # instead of the default `chief-manager`. The profile must exist on
+    # disk; the dispatcher uses task.assignee verbatim as the profile name
+    # when spawning the worker, so a typo here = a quiet "skipped_nonspawnable"
+    # outcome. Validate up-front.
+    profile_override = (args.get("profile") or "").strip()
+    if profile_override:
+        if not _profile_dir_exists(profile_override):
+            return tool_error(
+                f"chief_spawn: profile {profile_override!r} not found in "
+                f"~/.hermes/profiles/. Available chief-shaped profiles must "
+                f"have the `kanban` toolset enabled."
+            )
+        chief_assignee = profile_override
+    else:
+        chief_assignee = CHIEF_ASSIGNEE
+
     kb = _import_kanban_db()
     chief_id = _new_chief_id(name)
     now = int(time.time())
@@ -293,7 +323,7 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
                 "created_at, priority, max_runtime_seconds) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    task_id, title, brief, CHIEF_ASSIGNEE,
+                    task_id, title, brief, chief_assignee,
                     "ready", now, 0, max_runtime_min * 60,
                 ),
             )
