@@ -186,107 +186,268 @@ class TestMcPost:
 
 
 class TestMcPipelineRun:
-    # tool_error() returns a JSON STRING — we assert substring presence
-    # instead of dict-key access.
-    def test_missing_pipeline_name(self, mc_tools):
+    """`mc_pipeline_run` POSTs {action:'start', pipeline_id} to MC's
+    /api/pipelines/run. MC returns {run: {id, status, ...}}.
+    """
+
+    def test_missing_both_name_and_id(self, mc_tools):
         out = mc_tools._handle_mc_pipeline_run({})
         assert isinstance(out, str)
-        assert "pipeline_name" in out
+        assert "pipeline_name" in out and "pipeline_id" in out
 
-    def test_inputs_must_be_dict(self, mc_tools):
-        out = mc_tools._handle_mc_pipeline_run(
-            {"pipeline_name": "p", "inputs": "wrong"},
-        )
+    def test_pipeline_id_must_be_positive_int(self, mc_tools):
+        out = mc_tools._handle_mc_pipeline_run({"pipeline_id": 0})
         assert isinstance(out, str)
-        assert "inputs" in out
+        assert "pipeline_id" in out
 
-    def test_callback_url_must_be_string(self, mc_tools):
-        out = mc_tools._handle_mc_pipeline_run(
-            {"pipeline_name": "p", "callback_url": 42},
-        )
+        out = mc_tools._handle_mc_pipeline_run({"pipeline_id": "7"})
         assert isinstance(out, str)
-        assert "callback_url" in out
+        assert "pipeline_id" in out
 
-    def test_happy_path_normalises_response(self, mc_tools, monkeypatch):
+    def test_happy_path_with_pipeline_id(self, mc_tools, monkeypatch):
+        """Direct numeric id — no list lookup, single POST."""
         monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
         with patch.object(
             mc_tools, "_mc_post",
-            return_value={"id": "run_1", "status": "queued",
-                          "status_url": "http://test/api/runs/run_1"},
+            return_value={"run": {"id": 42, "pipeline_id": 7,
+                                  "status": "running", "current_step": 0}},
         ) as p:
-            out = mc_tools._handle_mc_pipeline_run({
-                "pipeline_name": "code-review",
-                "inputs": {"pr": 123},
-                "callback_url": "http://hermes-host/hooks/mc",
-                "tenant": "acme",
-            })
-        # Verify payload sent
-        args, kwargs = p.call_args
-        assert args[0] == "/api/pipelines/run"
-        sent = args[1]
-        assert sent["pipeline"] == "code-review"
-        assert sent["inputs"] == {"pr": 123}
-        assert sent["callback_url"] == "http://hermes-host/hooks/mc"
-        assert sent["tenant"] == "acme"
+            out = mc_tools._handle_mc_pipeline_run({"pipeline_id": 7})
+        # Verify payload sent matches MC's contract
+        path, payload = p.call_args.args
+        assert path == "/api/pipelines/run"
+        assert payload == {"action": "start", "pipeline_id": 7}
         # Verify response shape
         assert out["ok"] is True
-        assert out["pipeline_name"] == "code-review"
-        assert out["job_id"] == "run_1"
-        assert out["status"] == "queued"
-        assert out["status_url"] == "http://test/api/runs/run_1"
+        assert out["run_id"] == 42
+        assert out["pipeline_id"] == 7
+        assert out["status"] == "running"
+        assert out["current_step"] == 0
         assert "_raw" in out
 
+    def test_happy_path_with_pipeline_name_resolves_id(
+        self, mc_tools, monkeypatch,
+    ):
+        """`pipeline_name` triggers GET /api/pipelines for resolution
+        before the POST."""
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": [
+                {"id": 11, "name": "deploy"},
+                {"id": 22, "name": "code-review"},
+            ]},
+        ) as g, patch.object(
+            mc_tools, "_mc_post",
+            return_value={"run": {"id": 99, "pipeline_id": 22,
+                                  "status": "running", "current_step": 0}},
+        ) as p:
+            out = mc_tools._handle_mc_pipeline_run(
+                {"pipeline_name": "code-review"},
+            )
+        g.assert_called_once_with("/api/pipelines")
+        _, payload = p.call_args.args
+        assert payload == {"action": "start", "pipeline_id": 22}
+        assert out["run_id"] == 99
+        assert out["pipeline_id"] == 22
+        assert out["pipeline_name"] == "code-review"
+
+    def test_pipeline_name_not_found_lists_available(
+        self, mc_tools, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": [
+                {"id": 11, "name": "deploy"},
+                {"id": 22, "name": "code-review"},
+            ]},
+        ):
+            out = mc_tools._handle_mc_pipeline_run(
+                {"pipeline_name": "ghost"},
+            )
+        assert isinstance(out, str)
+        assert "ghost" in out
+        assert "deploy" in out and "code-review" in out  # surfaces options
+
+    def test_pipeline_name_with_empty_registry(
+        self, mc_tools, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": []},
+        ):
+            out = mc_tools._handle_mc_pipeline_run(
+                {"pipeline_name": "x"},
+            )
+        assert isinstance(out, str)
+        assert "none registered" in out or "not found" in out
+
     def test_unconfigured_returns_tool_error(self, mc_tools):
+        # Without HERMES_MC_BASE_URL, the lookup helper fails first
         out = mc_tools._handle_mc_pipeline_run({"pipeline_name": "x"})
         assert isinstance(out, str)
         assert "MC not configured" in out
+
+    def test_unconfigured_with_id_returns_tool_error(self, mc_tools):
+        # Same when bypassing lookup with pipeline_id — _mc_post fails
+        out = mc_tools._handle_mc_pipeline_run({"pipeline_id": 1})
+        assert isinstance(out, str)
+        assert "MC not configured" in out
+
+    def test_4xx_from_start_returns_tool_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_post",
+            side_effect=RuntimeError(
+                "MC /api/pipelines/run returned HTTP 404: pipeline_id not found",
+            ),
+        ):
+            out = mc_tools._handle_mc_pipeline_run({"pipeline_id": 999})
+        assert isinstance(out, str)
+        assert "HTTP 404" in out
+
+    def test_missing_run_object_returns_tool_error(
+        self, mc_tools, monkeypatch,
+    ):
+        """MC must return {run: {...}} on start. Anything else is a
+        contract violation — surface it instead of silently returning
+        ok=True with None fields."""
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_post",
+            return_value={"unexpected": "shape"},
+        ):
+            out = mc_tools._handle_mc_pipeline_run({"pipeline_id": 1})
+        assert isinstance(out, str)
+        assert "missing expected 'run' object" in out
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        """registry.dispatch passes task_id/agent_name/etc — handler
+        must accept arbitrary kwargs."""
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_post",
+            return_value={"run": {"id": 1, "status": "running"}},
+        ):
+            out = mc_tools._handle_mc_pipeline_run(
+                {"pipeline_id": 7},
+                task_id="t_123",
+                agent_name="research-agent",
+                some_future_kwarg="ignored",
+            )
+        assert out["run_id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# mc_pipeline_status handler
+# ---------------------------------------------------------------------------
+
+
+class TestMcPipelineStatus:
+    def test_missing_run_id(self, mc_tools):
+        out = mc_tools._handle_mc_pipeline_status({})
+        assert isinstance(out, str)
+        assert "run_id" in out
+
+    def test_run_id_must_be_positive_int(self, mc_tools):
+        out = mc_tools._handle_mc_pipeline_status({"run_id": "42"})
+        assert isinstance(out, str)
+        assert "run_id" in out
+
+        out = mc_tools._handle_mc_pipeline_status({"run_id": 0})
+        assert isinstance(out, str)
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"run": {
+                "id": 42, "pipeline_id": 7, "status": "completed",
+                "current_step": 2, "started_at": 1000, "completed_at": 2000,
+                "steps_snapshot": [{"step_index": 0, "status": "completed"}],
+            }},
+        ) as g:
+            out = mc_tools._handle_mc_pipeline_status({"run_id": 42})
+        g.assert_called_once_with("/api/pipelines/run?id=42")
+        assert out["ok"] is True
+        assert out["run_id"] == 42
+        assert out["status"] == "completed"
+        assert out["current_step"] == 2
+        assert out["completed_at"] == 2000
+
+    def test_404_returns_tool_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            side_effect=RuntimeError(
+                "MC /api/pipelines/run?id=999 returned HTTP 404: Run not found",
+            ),
+        ):
+            out = mc_tools._handle_mc_pipeline_status({"run_id": 999})
+        assert isinstance(out, str)
+        assert "HTTP 404" in out
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"run": {"id": 1, "status": "running"}},
+        ):
+            out = mc_tools._handle_mc_pipeline_status(
+                {"run_id": 1}, task_id="t", agent_name="x",
+            )
+        assert out["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# mc_pipeline_cancel handler
+# ---------------------------------------------------------------------------
+
+
+class TestMcPipelineCancel:
+    def test_missing_run_id(self, mc_tools):
+        out = mc_tools._handle_mc_pipeline_cancel({})
+        assert isinstance(out, str)
+        assert "run_id" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_post",
+            return_value={"run": {"id": 42, "status": "cancelled"}},
+        ) as p:
+            out = mc_tools._handle_mc_pipeline_cancel({"run_id": 42})
+        path, payload = p.call_args.args
+        assert path == "/api/pipelines/run"
+        assert payload == {"action": "cancel", "run_id": 42}
+        assert out["ok"] is True
+        assert out["run_id"] == 42
+        assert out["status"] == "cancelled"
 
     def test_4xx_returns_tool_error(self, mc_tools, monkeypatch):
         monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
         with patch.object(
             mc_tools, "_mc_post",
-            side_effect=RuntimeError("MC /api/pipelines/run returned HTTP 404: pipeline not found"),
+            side_effect=RuntimeError(
+                "MC /api/pipelines/run returned HTTP 400: Run is completed, not running",
+            ),
         ):
-            out = mc_tools._handle_mc_pipeline_run({"pipeline_name": "ghost"})
+            out = mc_tools._handle_mc_pipeline_cancel({"run_id": 42})
         assert isinstance(out, str)
-        assert "HTTP 404" in out
-
-    def test_alternative_response_field_names(self, mc_tools, monkeypatch):
-        """MC versions emit id under different keys (job_id, run_id).
-        Handler should accept any of them."""
-        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
-        with patch.object(
-            mc_tools, "_mc_post",
-            return_value={"job_id": "j_42"},  # no 'id' field
-        ):
-            out = mc_tools._handle_mc_pipeline_run({"pipeline_name": "x"})
-        assert out["job_id"] == "j_42"
-
-        with patch.object(
-            mc_tools, "_mc_post",
-            return_value={"run_id": "r_99"},
-        ):
-            out = mc_tools._handle_mc_pipeline_run({"pipeline_name": "x"})
-        assert out["job_id"] == "r_99"
+        assert "HTTP 400" in out
 
     def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
-        """registry.dispatch() calls handlers as handler(args, **kwargs);
-        the dispatcher passes `task_id`, `agent_name`, etc. through that
-        path. Handler MUST accept arbitrary kwargs or worker crashes
-        with TypeError before the HTTP call is even attempted.
-        """
         monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
         with patch.object(
             mc_tools, "_mc_post",
-            return_value={"id": "run_2"},
+            return_value={"run": {"id": 1, "status": "cancelled"}},
         ):
-            out = mc_tools._handle_mc_pipeline_run(
-                {"pipeline_name": "x"},
-                task_id="t_123",
-                agent_name="research-agent",
-                some_future_kwarg="ignored",
+            out = mc_tools._handle_mc_pipeline_cancel(
+                {"run_id": 1}, task_id="t", agent_name="x",
             )
-        assert out["job_id"] == "run_2"
+        assert out["ok"] is True
 
 
 # ---------------------------------------------------------------------------
