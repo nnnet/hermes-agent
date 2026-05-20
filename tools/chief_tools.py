@@ -272,8 +272,19 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
 
     # Create initial task assigned to chief-manager. Dispatcher will spawn
     # the chief worker on next tick.
+    #
+    # IMPORTANT: pass `db_path` explicitly (not `board=`) so the new
+    # chief board's path is used regardless of whether the caller is a
+    # worker process. ``kanban_db_path(board=...)`` honours
+    # ``HERMES_KANBAN_DB`` env first (dispatchers pin workers to their
+    # claimed board via that env), which means a worker invoking
+    # chief_spawn(name='X') would otherwise land the initial task on
+    # ITS OWN board instead of board 'X'. Constructing the path locally
+    # bypasses that override — this is the one place where ignoring the
+    # env pin is intentional.
     try:
-        conn = kb.connect(board=chief_id)
+        chief_db_path = kb.board_dir(chief_id) / "kanban.db"
+        conn = kb.connect(db_path=chief_db_path)
         try:
             task_id = "t_" + uuid.uuid4().hex[:8]
             title = brief.splitlines()[0][:80] if brief else f"{name} brief"
