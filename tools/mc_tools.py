@@ -1280,3 +1280,143 @@ registry.register(
     check_fn=_check_mc_mode,
     emoji="💰",
 )
+
+
+# ---------------------------------------------------------------------------
+# Retry policy (Phase 5) — chief-controlled retry of a failed MC task,
+# capped by HERMES_MC_RETRY_COUNT env (default 3). Wraps the underlying
+# mc_task_update PUT with policy guards so the chief doesn't accidentally
+# retry forever or reset a task that has been reassigned away.
+# ---------------------------------------------------------------------------
+
+def _default_retry_count() -> int:
+    try:
+        n = int(os.environ.get("HERMES_MC_RETRY_COUNT", "3"))
+    except (TypeError, ValueError):
+        n = 3
+    return max(0, n)
+
+
+def _handle_mc_task_retry(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Reset a failed/blocked MC task back to 'assigned' so MC's dispatcher
+    will pick it up again on the next tick. Capped by HERMES_MC_RETRY_COUNT
+    (env, default 3) unless an explicit `max_retries` is passed.
+
+    Guards:
+      - task must be in {failed, blocked} — won't reset an already-running
+        or already-done task by mistake
+      - retry_count on the MC record must be < max_retries
+      - optional `expected_assignee` check: if provided, must match the
+        current assigned_to — protects against retrying a task that an
+        operator reassigned to a different agent during failure handling
+    """
+    task_id = args.get("task_id") or args.get("id")
+    if not isinstance(task_id, int) or task_id <= 0:
+        return tool_error("mc_task_retry: 'task_id' must be a positive integer")
+
+    max_retries = args.get("max_retries")
+    if max_retries is None:
+        max_retries = _default_retry_count()
+    elif not isinstance(max_retries, int) or max_retries < 0:
+        return tool_error("mc_task_retry: 'max_retries' must be a non-negative integer")
+
+    expected_assignee = args.get("expected_assignee")
+    if expected_assignee is not None and not isinstance(expected_assignee, str):
+        return tool_error("mc_task_retry: 'expected_assignee' must be a string if provided")
+
+    # Read current task state
+    try:
+        raw = _mc_get(f"/api/tasks/{task_id}")
+    except RuntimeError as e:
+        return tool_error(f"mc_task_retry: {e}")
+    task = raw.get("task") or raw
+
+    status = task.get("status")
+    if status not in ("failed", "blocked"):
+        return tool_error(
+            f"mc_task_retry: task {task_id} is in status={status!r}; "
+            f"only failed/blocked tasks can be retried"
+        )
+
+    current_retries = int(task.get("retry_count") or 0)
+    if current_retries >= max_retries:
+        return {
+            "ok": False,
+            "task_id": task_id,
+            "retried": False,
+            "retry_count": current_retries,
+            "max_retries": max_retries,
+            "reason": "retry budget exhausted",
+            "alert": True,
+        }
+
+    current_assignee = task.get("assigned_to")
+    if expected_assignee and current_assignee != expected_assignee:
+        return tool_error(
+            f"mc_task_retry: task {task_id} now assigned to "
+            f"{current_assignee!r}, expected {expected_assignee!r}"
+        )
+
+    # Reset to assigned, bump retry_count
+    new_retries = current_retries + 1
+    try:
+        _mc_put(
+            f"/api/tasks/{task_id}",
+            {"status": "assigned", "retry_count": new_retries},
+        )
+    except RuntimeError as e:
+        return tool_error(f"mc_task_retry: {e}")
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "retried": True,
+        "retry_count": new_retries,
+        "max_retries": max_retries,
+        "remaining": max_retries - new_retries,
+        "assignee": current_assignee,
+    }
+
+
+MC_TASK_RETRY_SCHEMA = {
+    "name": "mc_task_retry",
+    "description": (
+        "Retry a failed/blocked MC task by resetting it to 'assigned'. "
+        "Capped at HERMES_MC_RETRY_COUNT (env, default 3) unless "
+        "`max_retries` is passed. Returns {retried: bool, retry_count, "
+        "max_retries, remaining}. When budget is exhausted, returns "
+        "{ok: false, alert: true} — chief should escalate via TG / "
+        "kanban_block instead of looping."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "integer"},
+            "max_retries": {
+                "type": "integer",
+                "description": (
+                    "Override HERMES_MC_RETRY_COUNT for this call. "
+                    "Non-negative integer."
+                ),
+            },
+            "expected_assignee": {
+                "type": "string",
+                "description": (
+                    "If set, verify the task's current assignee matches "
+                    "before retrying (refuse if operator reassigned)."
+                ),
+            },
+        },
+        "required": ["task_id"],
+    },
+}
+
+
+registry.register(
+    name="mc_task_retry",
+    toolset="kanban",
+    schema=MC_TASK_RETRY_SCHEMA,
+    handler=_handle_mc_task_retry,
+    check_fn=_check_mc_mode,
+    emoji="🔁",
+)

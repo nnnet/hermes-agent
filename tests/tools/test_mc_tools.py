@@ -906,3 +906,105 @@ class TestMcCostSummary:
         with patch.object(mc_tools, "_mc_get", return_value={"summary": {}}):
             out = mc_tools._handle_mc_cost_summary({}, task_id="t1")
         assert out["ok"] is True
+
+
+class TestMcTaskRetry:
+    def test_validates_id(self, mc_tools):
+        out = mc_tools._handle_mc_task_retry({"task_id": "abc"})
+        assert isinstance(out, str) and "positive integer" in out
+
+    def test_validates_max_retries(self, mc_tools):
+        out = mc_tools._handle_mc_task_retry({"task_id": 5, "max_retries": -1})
+        assert isinstance(out, str) and "non-negative" in out
+        out = mc_tools._handle_mc_task_retry({"task_id": 5, "max_retries": "two"})
+        assert isinstance(out, str) and "non-negative" in out
+
+    def test_validates_expected_assignee_type(self, mc_tools):
+        out = mc_tools._handle_mc_task_retry(
+            {"task_id": 5, "expected_assignee": 42},
+        )
+        assert isinstance(out, str) and "expected_assignee" in out
+
+    def test_refuses_non_failed_task(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "in_progress", "retry_count": 0,
+            "assigned_to": "x",
+        }}):
+            out = mc_tools._handle_mc_task_retry({"task_id": 5})
+        assert isinstance(out, str) and "only failed/blocked" in out
+
+    def test_refuses_when_budget_exhausted(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        monkeypatch.setenv("HERMES_MC_RETRY_COUNT", "3")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 3,
+            "assigned_to": "x",
+        }}):
+            out = mc_tools._handle_mc_task_retry({"task_id": 5})
+        assert isinstance(out, dict)
+        assert out["ok"] is False
+        assert out["retried"] is False
+        assert out["alert"] is True
+        assert out["retry_count"] == 3
+        assert "exhausted" in out["reason"]
+
+    def test_refuses_when_reassigned(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 0,
+            "assigned_to": "other-agent",
+        }}):
+            out = mc_tools._handle_mc_task_retry({
+                "task_id": 5, "expected_assignee": "mimo-architect",
+            })
+        assert isinstance(out, str) and "now assigned to" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        monkeypatch.setenv("HERMES_MC_RETRY_COUNT", "3")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 1,
+            "assigned_to": "mimo-architect",
+        }}), patch.object(mc_tools, "_mc_put", return_value={"task": {}}) as put:
+            out = mc_tools._handle_mc_task_retry({"task_id": 5})
+        path, payload = put.call_args.args
+        assert path == "/api/tasks/5"
+        assert payload == {"status": "assigned", "retry_count": 2}
+        assert out["ok"] is True
+        assert out["retried"] is True
+        assert out["retry_count"] == 2
+        assert out["max_retries"] == 3
+        assert out["remaining"] == 1
+
+    def test_env_default_when_unset(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        monkeypatch.delenv("HERMES_MC_RETRY_COUNT", raising=False)
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 0,
+            "assigned_to": "x",
+        }}), patch.object(mc_tools, "_mc_put", return_value={"task": {}}):
+            out = mc_tools._handle_mc_task_retry({"task_id": 5})
+        assert out["max_retries"] == 3  # default
+
+    def test_explicit_override(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        monkeypatch.setenv("HERMES_MC_RETRY_COUNT", "3")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 1,
+            "assigned_to": "x",
+        }}), patch.object(mc_tools, "_mc_put", return_value={"task": {}}):
+            out = mc_tools._handle_mc_task_retry({"task_id": 5, "max_retries": 10})
+        assert out["max_retries"] == 10
+        assert out["retry_count"] == 2
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 5, "status": "failed", "retry_count": 0,
+            "assigned_to": "x",
+        }}), patch.object(mc_tools, "_mc_put", return_value={"task": {}}):
+            out = mc_tools._handle_mc_task_retry(
+                {"task_id": 5}, run_id="r1", task_id="hermes_t1",
+            )
+        assert out["ok"] is True
