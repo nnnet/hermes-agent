@@ -268,3 +268,82 @@ class TestMcPipelineRun:
         ):
             out = mc_tools._handle_mc_pipeline_run({"pipeline_name": "x"})
         assert out["job_id"] == "r_99"
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        """registry.dispatch() calls handlers as handler(args, **kwargs);
+        the dispatcher passes `task_id`, `agent_name`, etc. through that
+        path. Handler MUST accept arbitrary kwargs or worker crashes
+        with TypeError before the HTTP call is even attempted.
+        """
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_post",
+            return_value={"id": "run_2"},
+        ):
+            out = mc_tools._handle_mc_pipeline_run(
+                {"pipeline_name": "x"},
+                task_id="t_123",
+                agent_name="research-agent",
+                some_future_kwarg="ignored",
+            )
+        assert out["job_id"] == "run_2"
+
+
+# ---------------------------------------------------------------------------
+# mc_pipeline_list handler
+# ---------------------------------------------------------------------------
+
+
+class TestMcPipelineList:
+    def test_unconfigured_returns_tool_error(self, mc_tools):
+        out = mc_tools._handle_mc_pipeline_list({})
+        assert isinstance(out, str)
+        assert "MC not configured" in out
+
+    def test_happy_path_returns_pipelines(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": [
+                {"id": 1, "name": "code-review"},
+                {"id": 2, "name": "deploy"},
+            ]},
+        ) as g:
+            out = mc_tools._handle_mc_pipeline_list({})
+        g.assert_called_once_with("/api/pipelines")
+        assert out["ok"] is True
+        assert out["count"] == 2
+        assert out["pipelines"][0]["name"] == "code-review"
+
+    def test_handles_empty_list(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": []},
+        ):
+            out = mc_tools._handle_mc_pipeline_list({})
+        assert out["ok"] is True
+        assert out["count"] == 0
+        assert out["pipelines"] == []
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        """Same as run-handler — registry.dispatch passes kwargs."""
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            return_value={"pipelines": []},
+        ):
+            out = mc_tools._handle_mc_pipeline_list(
+                {}, task_id="t_123", agent_name="x",
+            )
+        assert out["ok"] is True
+
+    def test_http_error_surfaces(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_mc_get",
+            side_effect=RuntimeError("MC /api/pipelines returned HTTP 500: oops"),
+        ):
+            out = mc_tools._handle_mc_pipeline_list({})
+        assert isinstance(out, str)
+        assert "HTTP 500" in out
