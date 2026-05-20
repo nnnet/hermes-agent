@@ -158,11 +158,53 @@ def _mc_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         ) from e
 
 
+def _mc_get(path: str) -> dict[str, Any]:
+    """GET counterpart to `_mc_post`. Same headers/timeout/error shape,
+    no payload. Used by list/inspect tools.
+    """
+    base, key, timeout = _mc_config()
+    if base is None:
+        raise RuntimeError(
+            "MC not configured — set HERMES_MC_BASE_URL in ~/.hermes/.env "
+            "(and optionally HERMES_MC_API_KEY for authenticated tenants)"
+        )
+
+    url = f"{base}{path}"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "hermes-mc-tools/0.1",
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    req = _urllib_request.Request(url, headers=headers, method="GET")
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw) if raw else {}
+            except ValueError:
+                return {"_raw_text": raw, "_warning": "non-json response"}
+    except _urllib_error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:  # pragma: no cover
+            pass
+        raise RuntimeError(
+            f"MC {path} returned HTTP {e.code}: {err_body[:300]}"
+        ) from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(
+            f"MC {path} unreachable at {url}: {e.reason}"
+        ) from e
+
+
 # ---------------------------------------------------------------------------
 # Tool: mc_pipeline_run
 # ---------------------------------------------------------------------------
 
-def _handle_mc_pipeline_run(args: dict[str, Any]) -> dict[str, Any]:
+def _handle_mc_pipeline_run(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
     """Why: Delegate a heavy workflow to MC's pipelines runner — chief
     decides the work needs multi-framework orchestration (e.g. a CrewAI
     crew or a LangGraph DAG) instead of the lighter in-Hermes path. Tool
@@ -276,6 +318,48 @@ MC_PIPELINE_RUN_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Tool: mc_pipeline_list
+# ---------------------------------------------------------------------------
+
+def _handle_mc_pipeline_list(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Why: A chief deciding whether to delegate work to MC first needs to
+    know which pipelines are available — otherwise mc_pipeline_run with a
+    nonexistent `pipeline_name` just 404s. This tool surfaces the
+    registered pipelines so the model can pick the right one (or report
+    "no MC pipeline registered for this kind of work" cleanly).
+    What: GETs MC `/api/pipelines` and returns `{"pipelines": [...]}`.
+    No required args.
+    """
+    try:
+        result = _mc_get("/api/pipelines")
+    except RuntimeError as e:
+        return tool_error(str(e))
+
+    pipelines = result.get("pipelines", result if isinstance(result, list) else [])
+    return {
+        "ok": True,
+        "count": len(pipelines) if isinstance(pipelines, list) else 0,
+        "pipelines": pipelines,
+    }
+
+
+MC_PIPELINE_LIST_SCHEMA = {
+    "name": "mc_pipeline_list",
+    "description": (
+        "List Mission Control (MC) pipelines registered on the configured "
+        "MC backend. Use this BEFORE mc_pipeline_run to discover available "
+        "`pipeline_name` values — running an unregistered pipeline returns "
+        "a 404. No arguments required."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -286,4 +370,13 @@ registry.register(
     handler=_handle_mc_pipeline_run,
     check_fn=_check_mc_mode,
     emoji="🚀",
+)
+
+registry.register(
+    name="mc_pipeline_list",
+    toolset="kanban",
+    schema=MC_PIPELINE_LIST_SCHEMA,
+    handler=_handle_mc_pipeline_list,
+    check_fn=_check_mc_mode,
+    emoji="📋",
 )
