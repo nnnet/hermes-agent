@@ -1,0 +1,22 @@
+tools/mc_tools.py
+  s_e5369d415d379b::t_3253801f724b20 503-708
+  s_e5369d415d379b::t_a2eefe4b15b1eb 748-765
+tests/tools/test_mc_tools.py
+  s_e5369d415d379b::t_e3567ba9b355e1 511-649
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.10",
+  "base_commit_sha": "1dfa54f77f331a27336def6afd94b58875d4d358",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
