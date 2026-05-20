@@ -508,3 +508,142 @@ class TestMcPipelineList:
             out = mc_tools._handle_mc_pipeline_list({})
         assert isinstance(out, str)
         assert "HTTP 500" in out
+
+
+# ---------------------------------------------------------------------------
+# mc_exec_approve_list + mc_exec_approve handlers (HITL bridge proxy)
+# ---------------------------------------------------------------------------
+
+
+class TestMcExecApproveList:
+    def test_happy_path(self, mc_tools, monkeypatch):
+        # _hitl_get reuses _mc_config for timeout — set base url so the
+        # cfg loader doesn't surface a "not configured" path. The
+        # actual HITL request is mocked.
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        bridge_response = {
+            "count": 1,
+            "pending": [
+                {
+                    "req_id": "abc",
+                    "tg_message_id": 42,
+                    "dispatched_at": 1000.0,
+                    "payload": {
+                        "id": "abc",
+                        "agent_id": "research-1",
+                        "task_id": "t-1",
+                        "type": "approval",
+                        "question": "Run X?",
+                        "options": ["yes", "no"],
+                    },
+                },
+            ],
+        }
+        with patch.object(
+            mc_tools, "_hitl_get", return_value=bridge_response,
+        ) as g:
+            out = mc_tools._handle_mc_exec_approve_list({})
+        g.assert_called_once_with("/hitl/list")
+        assert out["ok"] is True
+        assert out["count"] == 1
+        item = out["pending"][0]
+        assert item["req_id"] == "abc"
+        assert item["agent_id"] == "research-1"
+        assert item["question"] == "Run X?"
+
+    def test_empty_pending(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_get", return_value={"count": 0, "pending": []},
+        ):
+            out = mc_tools._handle_mc_exec_approve_list({})
+        assert out["ok"] is True
+        assert out["count"] == 0
+        assert out["pending"] == []
+
+    def test_bridge_unreachable_returns_tool_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_get",
+            side_effect=RuntimeError("HITL /hitl/list unreachable at ...: connection refused"),
+        ):
+            out = mc_tools._handle_mc_exec_approve_list({})
+        assert isinstance(out, str)
+        assert "unreachable" in out
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_get", return_value={"count": 0, "pending": []},
+        ):
+            out = mc_tools._handle_mc_exec_approve_list(
+                {}, task_id="t_123", agent_name="x",
+            )
+        assert out["ok"] is True
+
+
+class TestMcExecApprove:
+    def test_missing_req_id(self, mc_tools):
+        out = mc_tools._handle_mc_exec_approve({"action": "approve"})
+        assert isinstance(out, str)
+        assert "req_id" in out
+
+    def test_invalid_action(self, mc_tools):
+        out = mc_tools._handle_mc_exec_approve(
+            {"req_id": "abc", "action": "maybe"},
+        )
+        assert isinstance(out, str)
+        assert "action" in out
+
+    def test_reason_must_be_string(self, mc_tools):
+        out = mc_tools._handle_mc_exec_approve(
+            {"req_id": "abc", "action": "approve", "reason": 42},
+        )
+        assert isinstance(out, str)
+        assert "reason" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_post",
+            return_value={"ok": True, "req_id": "abc", "action": "approve",
+                          "mc_response": {"ok": True}},
+        ) as p:
+            out = mc_tools._handle_mc_exec_approve(
+                {"req_id": "abc", "action": "approve", "reason": "looks good"},
+            )
+        path, payload = p.call_args.args
+        assert path == "/hitl/respond"
+        assert payload == {
+            "req_id": "abc",
+            "action": "approve",
+            "reason": "looks good",
+        }
+        assert out["ok"] is True
+        assert out["req_id"] == "abc"
+        assert out["action"] == "approve"
+        assert out["mc_response"] == {"ok": True}
+
+    def test_404_returns_tool_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_post",
+            side_effect=RuntimeError("HITL /hitl/respond HTTP 404: unknown req_id"),
+        ):
+            out = mc_tools._handle_mc_exec_approve(
+                {"req_id": "ghost", "action": "approve"},
+            )
+        assert isinstance(out, str)
+        assert "HTTP 404" in out
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://test")
+        with patch.object(
+            mc_tools, "_hitl_post",
+            return_value={"ok": True, "mc_response": {}},
+        ):
+            out = mc_tools._handle_mc_exec_approve(
+                {"req_id": "abc", "action": "deny"},
+                task_id="t_123", agent_name="x",
+            )
+        assert out["ok"] is True
