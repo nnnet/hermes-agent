@@ -647,3 +647,194 @@ class TestMcExecApprove:
                 task_id="t_123", agent_name="x",
             )
         assert out["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# PM-tier tools: agents discovery + task lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestMcAgentsList:
+    def test_filters_by_name_substring(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"agents": [
+            {"id": 1, "name": "Architect", "role": "architect", "status": "offline",
+             "runtime_type": "claude", "config": {"model": {"primary": "x"}}},
+            {"id": 2, "name": "Linter", "role": "linter", "status": "online",
+             "runtime_type": "claude", "config": {"model": {"primary": "y"}}},
+        ]}):
+            out = mc_tools._handle_mc_agents_list({"name_contains": "arch"})
+        assert out["ok"] and out["count"] == 1
+        assert out["agents"][0]["name"] == "Architect"
+
+    def test_filters_by_status(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"agents": [
+            {"id": 1, "name": "A", "status": "offline"},
+            {"id": 2, "name": "B", "status": "online"},
+        ]}):
+            out = mc_tools._handle_mc_agents_list({"status": "online"})
+        assert out["count"] == 1 and out["agents"][0]["id"] == 2
+
+    def test_unwraps_string_config(self, mc_tools, monkeypatch):
+        # MC sometimes returns config as a JSON string instead of object.
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"agents": [
+            {"id": 1, "name": "A", "config":
+                '{"model":{"primary":"local/mimo-v2.5-pro"}}'},
+        ]}):
+            out = mc_tools._handle_mc_agents_list({})
+        assert out["agents"][0]["model"] == "local/mimo-v2.5-pro"
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"agents": []}):
+            out = mc_tools._handle_mc_agents_list({}, task_id="t1")
+        assert out["ok"] is True
+
+
+class TestMcTaskCreate:
+    def test_requires_title(self, mc_tools):
+        out = mc_tools._handle_mc_task_create({"project_id": 1})
+        assert isinstance(out, str) and "title" in out
+
+    def test_requires_project_id(self, mc_tools):
+        out = mc_tools._handle_mc_task_create({"title": "x"})
+        assert isinstance(out, str) and "project_id" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"task": {
+            "id": 99, "ticket_ref": "DEMO-001", "status": "assigned",
+            "assigned_to": "mimo-architect",
+        }}) as p:
+            out = mc_tools._handle_mc_task_create({
+                "title": "demo brief",
+                "project_id": 4,
+                "assigned_to": "mimo-architect",
+                "description": "do the thing",
+                "priority": "medium",
+            })
+        path, payload = p.call_args.args
+        assert path == "/api/tasks"
+        assert payload["title"] == "demo brief"
+        assert payload["project_id"] == 4
+        assert payload["assigned_to"] == "mimo-architect"
+        assert out["ok"] and out["task_id"] == 99
+        assert out["ticket_ref"] == "DEMO-001"
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"task": {"id": 1}}):
+            out = mc_tools._handle_mc_task_create(
+                {"title": "x", "project_id": 1},
+                run_id="r1",
+            )
+        assert out["ok"] is True
+
+
+class TestMcTaskGet:
+    def test_validates_id(self, mc_tools):
+        out = mc_tools._handle_mc_task_get({"task_id": "abc"})
+        assert isinstance(out, str) and "positive integer" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {
+            "id": 53, "status": "done", "resolution": "did it",
+        }}) as p:
+            out = mc_tools._handle_mc_task_get({"task_id": 53})
+        assert p.call_args.args[0] == "/api/tasks/53"
+        assert out["ok"] and out["task"]["status"] == "done"
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"task": {"id": 1}}):
+            out = mc_tools._handle_mc_task_get({"task_id": 1}, agent_name="x")
+        assert out["ok"] is True
+
+
+class TestMcTaskList:
+    def test_builds_query_string(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"tasks": []}) as p:
+            mc_tools._handle_mc_task_list({
+                "project_id": 4, "status": "assigned",
+                "assigned_to": "bob", "limit": 10,
+            })
+        path = p.call_args.args[0]
+        assert "/api/tasks?" in path
+        assert "project_id=4" in path
+        assert "status=assigned" in path
+        assert "assigned_to=bob" in path
+        assert "limit=10" in path
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_get", return_value={"tasks": []}):
+            out = mc_tools._handle_mc_task_list({}, task_id="t1")
+        assert out["ok"] is True
+
+
+class TestMcTaskUpdate:
+    def test_validates_id(self, mc_tools):
+        out = mc_tools._handle_mc_task_update({"task_id": "abc"})
+        assert isinstance(out, str) and "positive integer" in out
+
+    def test_requires_some_field(self, mc_tools):
+        out = mc_tools._handle_mc_task_update({"task_id": 5})
+        assert isinstance(out, str) and "no updatable fields" in out
+
+    def test_uses_put_verb(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_put", return_value={"task": {"id": 5}}) as p:
+            mc_tools._handle_mc_task_update({"task_id": 5, "status": "review"})
+        path, payload = p.call_args.args
+        assert path == "/api/tasks/5"
+        assert payload == {"status": "review"}
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_put", return_value={"task": {}}):
+            out = mc_tools._handle_mc_task_update(
+                {"task_id": 1, "status": "in_progress"}, task_id="hermes_t1",
+            )
+        assert out["ok"] is True
+
+
+class TestMcTaskComment:
+    def test_requires_task_id_and_content(self, mc_tools):
+        out = mc_tools._handle_mc_task_comment({"content": "x"})
+        assert isinstance(out, str) and "positive integer" in out
+        out = mc_tools._handle_mc_task_comment({"task_id": 1, "content": "   "})
+        assert isinstance(out, str) and "content" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={
+            "comment": {"id": 7, "content": "note"},
+        }) as p:
+            out = mc_tools._handle_mc_task_comment(
+                {"task_id": 5, "content": "note"},
+            )
+        path, payload = p.call_args.args
+        assert path == "/api/tasks/5/comments"
+        assert payload == {"content": "note"}
+        assert out["ok"] and out["comment"]["id"] == 7
+
+    def test_accepts_body_alias(self, mc_tools, monkeypatch):
+        # MC uses `content` but operators commonly think `body` — accept both.
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"comment": {}}):
+            out = mc_tools._handle_mc_task_comment(
+                {"task_id": 1, "body": "via body kw"},
+            )
+        assert out["ok"] is True
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"comment": {}}):
+            out = mc_tools._handle_mc_task_comment(
+                {"task_id": 1, "content": "x"}, run_id="r",
+            )
+        assert out["ok"] is True

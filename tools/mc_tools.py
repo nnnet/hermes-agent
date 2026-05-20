@@ -707,6 +707,349 @@ MC_EXEC_APPROVE_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# PUT helper — separate from POST because task updates use HTTP verb PUT
+# in MC's REST shape (see MC src/app/api/tasks/[id]/route.ts).
+# ---------------------------------------------------------------------------
+
+def _mc_put(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    base, key, timeout = _mc_config()
+    if base is None:
+        raise RuntimeError(
+            "MC not configured — set HERMES_MC_BASE_URL in ~/.hermes/.env"
+        )
+    url = f"{base}{path}"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "hermes-mc-tools/0.1",
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    body = json.dumps(payload).encode("utf-8")
+    req = _urllib_request.Request(url, data=body, headers=headers, method="PUT")
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw) if raw else {}
+            except ValueError:
+                return {"_raw_text": raw, "_warning": "non-json response"}
+    except _urllib_error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"MC {path} returned HTTP {e.code}: {err_body[:300]}"
+        ) from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(f"MC {path} unreachable at {url}: {e.reason}") from e
+
+
+# ---------------------------------------------------------------------------
+# PM-tier tools: agents discovery, task lifecycle, comments.
+# Used by mc-pm-chief and any orchestrator that needs to drive MC end-to-end.
+# Schemas favour shape stability over field completeness — list endpoints
+# return summaries, get endpoints return full records.
+# ---------------------------------------------------------------------------
+
+def _handle_mc_agents_list(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """List MC agents. Filters: name_contains (substring), status
+    (online/offline/error), runtime_type (openclaw/claude/custom/hermes).
+    Returns compact summaries — full agent record via `mc_agents_get`."""
+    name_filter = args.get("name_contains")
+    status_filter = args.get("status")
+    runtime_filter = args.get("runtime_type")
+    try:
+        raw = _mc_get("/api/agents")
+    except RuntimeError as e:
+        return tool_error(f"mc_agents_list: {e}")
+    agents = raw.get("agents") or []
+    out: list[dict[str, Any]] = []
+    for a in agents:
+        if name_filter and name_filter.lower() not in (a.get("name") or "").lower():
+            continue
+        if status_filter and a.get("status") != status_filter:
+            continue
+        if runtime_filter and a.get("runtime_type") != runtime_filter:
+            continue
+        cfg = a.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except (ValueError, TypeError):
+                cfg = {}
+        model = cfg.get("model")
+        if isinstance(model, dict):
+            model = model.get("primary")
+        soul = a.get("soul_content") or ""
+        out.append({
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "role": a.get("role"),
+            "model": model,
+            "status": a.get("status"),
+            "runtime_type": a.get("runtime_type"),
+            "soul_snippet": soul[:200],
+        })
+    return {"ok": True, "count": len(out), "agents": out}
+
+
+MC_AGENTS_LIST_SCHEMA = {
+    "name": "mc_agents_list",
+    "description": (
+        "List MC agents available to assign tasks to. Optional filters: "
+        "name_contains, status (online/offline/error), runtime_type "
+        "(openclaw/claude/custom/hermes). Returns compact summaries with "
+        "id, name, role, model, status, runtime_type, soul_snippet. Call "
+        "this before mc_task_create to pick a target agent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name_contains": {"type": "string"},
+            "status": {"type": "string", "enum": ["online", "offline", "error"]},
+            "runtime_type": {"type": "string"},
+        },
+        "required": [],
+    },
+}
+
+
+def _handle_mc_task_list(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """List MC tasks with filters: project_id, status, assigned_to, limit.
+    Returns compact summaries (id, title, status, assigned_to, ticket_ref)."""
+    project_id = args.get("project_id")
+    status = args.get("status")
+    assigned_to = args.get("assigned_to")
+    limit = args.get("limit") or 50
+    qs: list[str] = []
+    if project_id is not None:
+        qs.append(f"project_id={int(project_id)}")
+    if status:
+        qs.append(f"status={status}")
+    if assigned_to:
+        qs.append(f"assigned_to={assigned_to}")
+    if limit:
+        qs.append(f"limit={int(limit)}")
+    path = "/api/tasks" + ("?" + "&".join(qs) if qs else "")
+    try:
+        raw = _mc_get(path)
+    except RuntimeError as e:
+        return tool_error(f"mc_task_list: {e}")
+    tasks = raw.get("tasks") or []
+    out = [
+        {
+            "id": t.get("id"),
+            "title": t.get("title"),
+            "status": t.get("status"),
+            "priority": t.get("priority"),
+            "assigned_to": t.get("assigned_to"),
+            "project_id": t.get("project_id"),
+            "ticket_ref": t.get("ticket_ref"),
+        }
+        for t in tasks
+    ]
+    return {"ok": True, "count": len(out), "tasks": out}
+
+
+MC_TASK_LIST_SCHEMA = {
+    "name": "mc_task_list",
+    "description": (
+        "List MC tasks. Filters: project_id, status (assigned/in_progress/"
+        "review/done/failed), assigned_to (agent name), limit (default 50)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "integer"},
+            "status": {"type": "string"},
+            "assigned_to": {"type": "string"},
+            "limit": {"type": "integer"},
+        },
+        "required": [],
+    },
+}
+
+
+def _handle_mc_task_get(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Fetch a single MC task by id. Returns the full record including
+    resolution, error_message, dispatch_attempts — the fields a poller
+    needs to detect terminal states."""
+    task_id = args.get("task_id") or args.get("id")
+    if not isinstance(task_id, int) or task_id <= 0:
+        return tool_error("mc_task_get: 'task_id' must be a positive integer")
+    try:
+        raw = _mc_get(f"/api/tasks/{task_id}")
+    except RuntimeError as e:
+        return tool_error(f"mc_task_get: {e}")
+    return {"ok": True, "task": raw.get("task") or raw}
+
+
+MC_TASK_GET_SCHEMA = {
+    "name": "mc_task_get",
+    "description": (
+        "Fetch the full MC task record by id. Returns status, "
+        "assigned_to, resolution, error_message, dispatch_attempts, "
+        "completed_at, ticket_ref — the fields a polling chief needs to "
+        "detect terminal state and aggregate the result."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"task_id": {"type": "integer"}},
+        "required": ["task_id"],
+    },
+}
+
+
+def _handle_mc_task_create(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Create a new MC task. Required: title, project_id. Optional:
+    description, assigned_to, priority, status, tags."""
+    title = args.get("title")
+    project_id = args.get("project_id")
+    if not isinstance(title, str) or not title.strip():
+        return tool_error("mc_task_create: 'title' (non-empty string) is required")
+    if not isinstance(project_id, int) or project_id <= 0:
+        return tool_error("mc_task_create: 'project_id' (positive integer) is required")
+
+    payload: dict[str, Any] = {
+        "title": title.strip(),
+        "project_id": project_id,
+    }
+    for k in ("description", "assigned_to", "priority", "status"):
+        v = args.get(k)
+        if v is not None:
+            payload[k] = v
+    tags = args.get("tags")
+    if isinstance(tags, list):
+        payload["tags"] = tags
+
+    try:
+        raw = _mc_post("/api/tasks", payload)
+    except RuntimeError as e:
+        return tool_error(f"mc_task_create: {e}")
+    task = raw.get("task") or raw
+    return {
+        "ok": True,
+        "task_id": task.get("id"),
+        "ticket_ref": task.get("ticket_ref"),
+        "status": task.get("status"),
+        "assigned_to": task.get("assigned_to"),
+    }
+
+
+MC_TASK_CREATE_SCHEMA = {
+    "name": "mc_task_create",
+    "description": (
+        "Create a new MC task in a project. Required: title, project_id. "
+        "Optional: description, assigned_to (MC agent name), priority "
+        "(low/medium/high/critical), status (defaults to 'assigned' if "
+        "assigned_to is set, else 'inbox'), tags (list of strings). "
+        "Returns task_id and ticket_ref."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "project_id": {"type": "integer"},
+            "description": {"type": "string"},
+            "assigned_to": {"type": "string"},
+            "priority": {"type": "string"},
+            "status": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "project_id"],
+    },
+}
+
+
+def _handle_mc_task_update(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Update an existing MC task. Required: task_id. Any other field
+    becomes a PUT payload key. Common updates: status transition,
+    assigned_to reassignment, priority bump."""
+    task_id = args.get("task_id") or args.get("id")
+    if not isinstance(task_id, int) or task_id <= 0:
+        return tool_error("mc_task_update: 'task_id' must be a positive integer")
+
+    payload: dict[str, Any] = {}
+    for k in ("title", "description", "assigned_to", "status", "priority",
+              "resolution", "tags", "retry_count"):
+        if k in args and args[k] is not None:
+            payload[k] = args[k]
+    if not payload:
+        return tool_error("mc_task_update: no updatable fields provided")
+
+    try:
+        raw = _mc_put(f"/api/tasks/{task_id}", payload)
+    except RuntimeError as e:
+        return tool_error(f"mc_task_update: {e}")
+    task = raw.get("task") or raw
+    return {"ok": True, "task_id": task_id, "task": task}
+
+
+MC_TASK_UPDATE_SCHEMA = {
+    "name": "mc_task_update",
+    "description": (
+        "Update an existing MC task. Required: task_id. Optional update "
+        "fields: title, description, assigned_to, status, priority, "
+        "resolution, tags, retry_count. Only changed fields are sent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "integer"},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+            "assigned_to": {"type": "string"},
+            "status": {"type": "string"},
+            "priority": {"type": "string"},
+            "resolution": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "retry_count": {"type": "integer"},
+        },
+        "required": ["task_id"],
+    },
+}
+
+
+def _handle_mc_task_comment(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Add a comment to an MC task. Required: task_id, content."""
+    task_id = args.get("task_id") or args.get("id")
+    content = args.get("content") or args.get("body")
+    if not isinstance(task_id, int) or task_id <= 0:
+        return tool_error("mc_task_comment: 'task_id' must be a positive integer")
+    if not isinstance(content, str) or not content.strip():
+        return tool_error("mc_task_comment: 'content' (non-empty string) is required")
+    try:
+        raw = _mc_post(
+            f"/api/tasks/{task_id}/comments",
+            {"content": content.strip()},
+        )
+    except RuntimeError as e:
+        return tool_error(f"mc_task_comment: {e}")
+    return {"ok": True, "comment": raw.get("comment") or raw}
+
+
+MC_TASK_COMMENT_SCHEMA = {
+    "name": "mc_task_comment",
+    "description": (
+        "Add a comment to an MC task. Required: task_id, content. The "
+        "comment is authored as the API caller (admin if using the global "
+        "API_KEY). Use this to surface PM-side notes, escalation "
+        "rationale, or aggregation summaries to the operator."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "integer"},
+            "content": {"type": "string"},
+        },
+        "required": ["task_id", "content"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -762,4 +1105,60 @@ registry.register(
     handler=_handle_mc_exec_approve,
     check_fn=_check_mc_mode,
     emoji="✅",
+)
+
+# --- PM-tier tools (agents discovery + task lifecycle + comments) ---------
+
+registry.register(
+    name="mc_agents_list",
+    toolset="kanban",
+    schema=MC_AGENTS_LIST_SCHEMA,
+    handler=_handle_mc_agents_list,
+    check_fn=_check_mc_mode,
+    emoji="👥",
+)
+
+registry.register(
+    name="mc_task_list",
+    toolset="kanban",
+    schema=MC_TASK_LIST_SCHEMA,
+    handler=_handle_mc_task_list,
+    check_fn=_check_mc_mode,
+    emoji="📋",
+)
+
+registry.register(
+    name="mc_task_get",
+    toolset="kanban",
+    schema=MC_TASK_GET_SCHEMA,
+    handler=_handle_mc_task_get,
+    check_fn=_check_mc_mode,
+    emoji="🔎",
+)
+
+registry.register(
+    name="mc_task_create",
+    toolset="kanban",
+    schema=MC_TASK_CREATE_SCHEMA,
+    handler=_handle_mc_task_create,
+    check_fn=_check_mc_mode,
+    emoji="➕",
+)
+
+registry.register(
+    name="mc_task_update",
+    toolset="kanban",
+    schema=MC_TASK_UPDATE_SCHEMA,
+    handler=_handle_mc_task_update,
+    check_fn=_check_mc_mode,
+    emoji="✏️",
+)
+
+registry.register(
+    name="mc_task_comment",
+    toolset="kanban",
+    schema=MC_TASK_COMMENT_SCHEMA,
+    handler=_handle_mc_task_comment,
+    check_fn=_check_mc_mode,
+    emoji="💬",
 )
