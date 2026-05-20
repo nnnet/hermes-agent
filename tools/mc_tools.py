@@ -204,78 +204,105 @@ def _mc_get(path: str) -> dict[str, Any]:
 # Tool: mc_pipeline_run
 # ---------------------------------------------------------------------------
 
+def _resolve_pipeline_id(pipeline_name: str) -> int:
+    """Resolve a human-readable pipeline name to its numeric MC id by
+    walking GET /api/pipelines. Raises RuntimeError on not-found or
+    transport failure — caller wraps in tool_error().
+    """
+    result = _mc_get("/api/pipelines")
+    pipelines = result.get("pipelines", result if isinstance(result, list) else [])
+    if not isinstance(pipelines, list):
+        raise RuntimeError(
+            f"MC /api/pipelines returned unexpected shape: {type(pipelines).__name__}"
+        )
+    for p in pipelines:
+        if isinstance(p, dict) and p.get("name") == pipeline_name:
+            pid = p.get("id")
+            if isinstance(pid, int):
+                return pid
+            raise RuntimeError(
+                f"pipeline '{pipeline_name}' has non-integer id: {pid!r}"
+            )
+    available = ", ".join(
+        repr(p.get("name")) for p in pipelines if isinstance(p, dict)
+    ) or "(none registered)"
+    raise RuntimeError(
+        f"pipeline '{pipeline_name}' not found in MC. Available: {available}"
+    )
+
+
 def _handle_mc_pipeline_run(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
     """Why: Delegate a heavy workflow to MC's pipelines runner — chief
-    decides the work needs multi-framework orchestration (e.g. a CrewAI
-    crew or a LangGraph DAG) instead of the lighter in-Hermes path. Tool
-    returns the MC job descriptor (id, status URL) so the chief can poll
-    or attach a webhook.
-    What: POSTs to MC `/api/pipelines/run` with the operator-supplied
-    `pipeline_name` and `inputs` dict. MC creates a pipeline-run and
-    returns its id + status endpoint. Tool surfaces both back to the
-    caller as a flat dict.
-    Test: test_mc_pipeline_run_happy, test_mc_pipeline_run_missing_name,
-    test_mc_pipeline_run_unconfigured, test_mc_pipeline_run_4xx.
+    decides the work needs multi-framework orchestration (CrewAI /
+    LangGraph / AutoGen agents inside MC) instead of the lighter
+    in-Hermes path. Tool kicks off the pipeline and returns the new
+    run's `run_id` so the chief can poll via `mc_pipeline_status` or
+    cancel via `mc_pipeline_cancel`.
+    What: POSTs `{action: "start", pipeline_id}` to MC's
+    `/api/pipelines/run`. Accepts EITHER `pipeline_name` (resolved
+    to id via GET /api/pipelines) OR `pipeline_id` directly. MC's
+    pipelines do not accept runtime `inputs` — all configuration
+    lives in the pipeline template's workflow_templates rows. Tool
+    surfaces the new run object as `{ok, run_id, status, pipeline_id,
+    pipeline_name, _raw}`.
+    Test: TestMcPipelineRun.*
     """
+    pipeline_id = args.get("pipeline_id")
     pipeline_name = args.get("pipeline_name") or args.get("pipeline")
-    if not isinstance(pipeline_name, str) or not pipeline_name:
+
+    if pipeline_id is not None:
+        if not isinstance(pipeline_id, int) or pipeline_id <= 0:
+            return tool_error(
+                "mc_pipeline_run: 'pipeline_id' must be a positive integer"
+            )
+    elif isinstance(pipeline_name, str) and pipeline_name:
+        try:
+            pipeline_id = _resolve_pipeline_id(pipeline_name)
+        except RuntimeError as e:
+            return tool_error(f"mc_pipeline_run: {e}")
+    else:
         return tool_error(
-            "mc_pipeline_run: 'pipeline_name' is required (string)"
+            "mc_pipeline_run: provide either 'pipeline_name' (string) "
+            "or 'pipeline_id' (integer)"
         )
-
-    inputs = args.get("inputs") or {}
-    if not isinstance(inputs, dict):
-        return tool_error(
-            "mc_pipeline_run: 'inputs' must be a JSON object if provided"
-        )
-
-    # Optional callback for async result delivery. MC will POST the final
-    # result to this URL (must be reachable from MC — typically Hermes
-    # gateway's webhook receiver).
-    callback_url = args.get("callback_url")
-    if callback_url is not None and not isinstance(callback_url, str):
-        return tool_error("mc_pipeline_run: 'callback_url' must be a string")
-
-    payload: dict[str, Any] = {
-        "pipeline": pipeline_name,
-        "inputs": inputs,
-    }
-    if callback_url:
-        payload["callback_url"] = callback_url
-
-    # Optional tenant/project id for multi-tenant MC instances.
-    tenant = args.get("tenant")
-    if isinstance(tenant, str) and tenant:
-        payload["tenant"] = tenant
 
     try:
-        result = _mc_post("/api/pipelines/run", payload)
+        result = _mc_post(
+            "/api/pipelines/run",
+            {"action": "start", "pipeline_id": pipeline_id},
+        )
     except RuntimeError as e:
         return tool_error(str(e))
 
-    # Normalise the response shape so tool callers don't need to know
-    # MC's exact field names. We keep the raw response under _raw for
-    # debugging.
+    # MC returns `{run: {id, pipeline_id, status, current_step, ...}}`
+    # on success. Normalise to flat keys the caller can consume without
+    # walking a nested dict.
+    run = result.get("run") if isinstance(result, dict) else None
+    if not isinstance(run, dict):
+        return tool_error(
+            "mc_pipeline_run: MC response missing expected 'run' object; "
+            f"raw: {str(result)[:200]}"
+        )
     return {
         "ok": True,
+        "pipeline_id": pipeline_id,
         "pipeline_name": pipeline_name,
-        "job_id": result.get("id") or result.get("job_id") or result.get("run_id"),
-        "status": result.get("status"),
-        "status_url": result.get("status_url") or result.get("url"),
-        "_raw": result,
+        "run_id": run.get("id"),
+        "status": run.get("status"),
+        "current_step": run.get("current_step"),
+        "_raw": run,
     }
 
 
 MC_PIPELINE_RUN_SCHEMA = {
     "name": "mc_pipeline_run",
     "description": (
-        "Delegate a workflow to an external Mission Control (MC) "
-        "execution backend by running one of its registered pipelines. "
-        "Use this when a task needs multi-framework orchestration "
-        "(CrewAI / LangGraph / AutoGen agents inside MC) or a heavy "
-        "long-running pipeline that shouldn't run inline in the agent "
-        "turn. Returns a job_id and status_url for polling. Requires "
-        "HERMES_MC_BASE_URL (and optionally HERMES_MC_API_KEY) in env."
+        "Start a Mission Control (MC) pipeline run. Use this to delegate "
+        "a heavy workflow (CrewAI / LangGraph / AutoGen multi-step "
+        "orchestration) to MC. Returns the new `run_id` for polling via "
+        "`mc_pipeline_status`. Requires HERMES_MC_BASE_URL (and "
+        "HERMES_MC_API_KEY for authenticated tenants) in env. Use "
+        "`mc_pipeline_list` first to discover available pipelines."
     ),
     "parameters": {
         "type": "object",
@@ -283,36 +310,149 @@ MC_PIPELINE_RUN_SCHEMA = {
             "pipeline_name": {
                 "type": "string",
                 "description": (
-                    "The MC pipeline identifier to run — must already be "
-                    "registered in MC. List available via the MC web UI "
-                    "(/pipelines) or `curl $HERMES_MC_BASE_URL/api/pipelines`."
+                    "Human-readable pipeline name (e.g. 'code-review'). "
+                    "Resolved to id via GET /api/pipelines. Provide this "
+                    "OR pipeline_id."
                 ),
             },
-            "inputs": {
-                "type": "object",
+            "pipeline_id": {
+                "type": "integer",
                 "description": (
-                    "JSON object of pipeline inputs. Shape depends on the "
-                    "pipeline — consult the pipeline's MC definition."
-                ),
-            },
-            "callback_url": {
-                "type": "string",
-                "description": (
-                    "Optional. URL MC will POST the final result to when "
-                    "the pipeline finishes. Useful for async patterns where "
-                    "the chief doesn't want to poll. Typically the Hermes "
-                    "gateway webhook endpoint."
-                ),
-            },
-            "tenant": {
-                "type": "string",
-                "description": (
-                    "Optional. Tenant/project slug for multi-tenant MC "
-                    "deployments. Most home setups can omit this."
+                    "Numeric MC pipeline id. Use this instead of "
+                    "pipeline_name when the id is already known (e.g. "
+                    "from a prior mc_pipeline_list call). Skips a lookup."
                 ),
             },
         },
-        "required": ["pipeline_name"],
+        "required": [],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool: mc_pipeline_status
+# ---------------------------------------------------------------------------
+
+def _handle_mc_pipeline_status(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Why: After `mc_pipeline_run` returns a run_id, the chief needs to
+    poll until the pipeline finishes — without polling we lose
+    end-to-end orchestration visibility. This tool reads MC's run
+    state so the chief can decide to wait / advance other work /
+    cancel.
+    What: GETs MC `/api/pipelines/run?id={run_id}`. Returns the run
+    descriptor including status, current_step, steps_snapshot, and
+    completed_at. No state mutation.
+    Test: TestMcPipelineStatus.*
+    """
+    run_id = args.get("run_id")
+    if not isinstance(run_id, int) or run_id <= 0:
+        return tool_error(
+            "mc_pipeline_status: 'run_id' must be a positive integer"
+        )
+
+    try:
+        result = _mc_get(f"/api/pipelines/run?id={run_id}")
+    except RuntimeError as e:
+        return tool_error(str(e))
+
+    run = result.get("run") if isinstance(result, dict) else None
+    if not isinstance(run, dict):
+        return tool_error(
+            "mc_pipeline_status: MC response missing expected 'run' object; "
+            f"raw: {str(result)[:200]}"
+        )
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "status": run.get("status"),
+        "current_step": run.get("current_step"),
+        "pipeline_id": run.get("pipeline_id"),
+        "pipeline_name": run.get("pipeline_name"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
+        "steps_snapshot": run.get("steps_snapshot"),
+        "_raw": run,
+    }
+
+
+MC_PIPELINE_STATUS_SCHEMA = {
+    "name": "mc_pipeline_status",
+    "description": (
+        "Get the current status of a Mission Control pipeline run. Use "
+        "this to poll a run started by `mc_pipeline_run`. Returns the "
+        "run's status (running, completed, failed, cancelled), "
+        "current_step index, and step-by-step snapshot."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "integer",
+                "description": (
+                    "The pipeline run id (returned by `mc_pipeline_run`)."
+                ),
+            },
+        },
+        "required": ["run_id"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool: mc_pipeline_cancel
+# ---------------------------------------------------------------------------
+
+def _handle_mc_pipeline_cancel(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Why: A chief may need to abort a long-running pipeline (user
+    interruption, downstream failure, scope change). Without cancel
+    the run keeps consuming MC resources until natural completion.
+    What: POSTs `{action: "cancel", run_id}` to /api/pipelines/run.
+    MC marks the run as cancelled and stops scheduling new steps.
+    Test: TestMcPipelineCancel.*
+    """
+    run_id = args.get("run_id")
+    if not isinstance(run_id, int) or run_id <= 0:
+        return tool_error(
+            "mc_pipeline_cancel: 'run_id' must be a positive integer"
+        )
+
+    try:
+        result = _mc_post(
+            "/api/pipelines/run",
+            {"action": "cancel", "run_id": run_id},
+        )
+    except RuntimeError as e:
+        return tool_error(str(e))
+
+    run = result.get("run") if isinstance(result, dict) else None
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "status": (run or {}).get("status") if isinstance(run, dict) else None,
+        "_raw": result,
+    }
+
+
+MC_PIPELINE_CANCEL_SCHEMA = {
+    "name": "mc_pipeline_cancel",
+    "description": (
+        "Cancel a running Mission Control pipeline run. MC marks the "
+        "run as cancelled and stops scheduling new steps; in-flight "
+        "steps may still complete. Use sparingly — prefer letting "
+        "pipelines finish naturally."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "run_id": {
+                "type": "integer",
+                "description": (
+                    "The pipeline run id to cancel (returned by "
+                    "`mc_pipeline_run`)."
+                ),
+            },
+        },
+        "required": ["run_id"],
     },
 }
 
@@ -379,4 +519,22 @@ registry.register(
     handler=_handle_mc_pipeline_list,
     check_fn=_check_mc_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="mc_pipeline_status",
+    toolset="kanban",
+    schema=MC_PIPELINE_STATUS_SCHEMA,
+    handler=_handle_mc_pipeline_status,
+    check_fn=_check_mc_mode,
+    emoji="🔎",
+)
+
+registry.register(
+    name="mc_pipeline_cancel",
+    toolset="kanban",
+    schema=MC_PIPELINE_CANCEL_SCHEMA,
+    handler=_handle_mc_pipeline_cancel,
+    check_fn=_check_mc_mode,
+    emoji="✋",
 )
