@@ -500,6 +500,213 @@ MC_PIPELINE_LIST_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Tools: mc_exec_approve_list + mc_exec_approve
+#
+# These talk to the Hermes HITL bridge sidecar (default
+# http://172.17.0.1:8889) instead of MC directly. The bridge owns the
+# state.db that maps req_id → tg_message_id, so calling it gives us a
+# correctly-edited audit-trail message in TG for free. The bridge in
+# turn POSTs MC `/api/exec-approvals` to resolve the approval.
+#
+# Why this layer of indirection (vs. POSTing MC directly from the
+# tool):
+#   * The bridge knows which TG chat the message went to and can edit
+#     it with the decision; the tool doesn't have that mapping.
+#   * The bridge is the single source of truth for which req_ids are
+#     pending; the main agent shouldn't be expected to track them.
+#   * If a future MC version fires `exec.approval.*` webhooks
+#     directly, only the bridge changes — tool callers stay stable.
+# ---------------------------------------------------------------------------
+
+def _hitl_base() -> str:
+    return os.environ.get(
+        "HERMES_HITL_BASE_URL", "http://172.17.0.1:8889",
+    ).rstrip("/")
+
+
+def _hitl_get(path: str) -> dict[str, Any]:
+    base, _, timeout = _mc_config()  # reuse timeout from MC config
+    url = f"{_hitl_base()}{path}"
+    req = _urllib_request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "hermes-mc-tools/0.1"},
+        method="GET",
+    )
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else {}
+    except _urllib_error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"HITL {path} HTTP {e.code}: {body[:300]}") from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(f"HITL {path} unreachable at {url}: {e.reason}") from e
+
+
+def _hitl_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    _, _, timeout = _mc_config()
+    url = f"{_hitl_base()}{path}"
+    body = json.dumps(payload).encode("utf-8")
+    req = _urllib_request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "hermes-mc-tools/0.1",
+        },
+        method="POST",
+    )
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else {}
+    except _urllib_error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"HITL {path} HTTP {e.code}: {body[:300]}") from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(f"HITL {path} unreachable at {url}: {e.reason}") from e
+
+
+def _handle_mc_exec_approve_list(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Why: When a user types `/approve <req_id>` in TG, the main agent
+    needs to confirm the req_id exists and is still pending before
+    POSTing the decision. This tool lists what the bridge knows about.
+    What: GETs HITL bridge `/hitl/list`. Returns `{ok, count, pending}`.
+    No required args.
+    """
+    try:
+        result = _hitl_get("/hitl/list")
+    except RuntimeError as e:
+        return tool_error(str(e))
+    pending = result.get("pending", [])
+    if not isinstance(pending, list):
+        pending = []
+    # Surface just the operator-relevant fields. The full payload is
+    # available in `_raw` for debugging.
+    summary = []
+    for r in pending:
+        if not isinstance(r, dict):
+            continue
+        p = r.get("payload") or {}
+        summary.append({
+            "req_id": r.get("req_id"),
+            "agent_id": p.get("agent_id"),
+            "task_id": p.get("task_id"),
+            "type": p.get("type"),
+            "question": p.get("question"),
+            "options": p.get("options"),
+            "dispatched_at": r.get("dispatched_at"),
+        })
+    return {"ok": True, "count": len(summary), "pending": summary}
+
+
+MC_EXEC_APPROVE_LIST_SCHEMA = {
+    "name": "mc_exec_approve_list",
+    "description": (
+        "List MC exec-approval requests known to the Hermes HITL bridge "
+        "(http://172.17.0.1:8889/hitl/list). Use this to see which "
+        "req_ids the operator could approve/deny — typically called "
+        "right before mc_exec_approve to confirm the req_id is still "
+        "pending. No arguments required."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+
+def _handle_mc_exec_approve(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Why: Operator wrote `/approve <req_id>` (or `/deny`) in TG; the
+    main agent needs to forward that decision to MC. Going through
+    the HITL bridge instead of MC directly gets us automatic edit of
+    the original TG message ("✅ approved at HH:MM") + audit
+    persistence in the bridge's state.db.
+    What: POSTs HITL bridge `/hitl/respond` with `{req_id, action,
+    reason?}`. Action must be one of approve / deny / always_allow
+    (matches MC's contract).
+    """
+    req_id = args.get("req_id")
+    action = args.get("action")
+    reason = args.get("reason")
+
+    if not isinstance(req_id, str) or not req_id:
+        return tool_error("mc_exec_approve: 'req_id' (string) is required")
+    if action not in ("approve", "deny", "always_allow"):
+        return tool_error(
+            "mc_exec_approve: 'action' must be one of: "
+            "approve, deny, always_allow",
+        )
+    if reason is not None and not isinstance(reason, str):
+        return tool_error("mc_exec_approve: 'reason' must be a string if provided")
+
+    payload: dict[str, Any] = {"req_id": req_id, "action": action}
+    if reason:
+        payload["reason"] = reason
+    try:
+        result = _hitl_post("/hitl/respond", payload)
+    except RuntimeError as e:
+        return tool_error(str(e))
+    return {
+        "ok": True,
+        "req_id": req_id,
+        "action": action,
+        "mc_response": result.get("mc_response"),
+    }
+
+
+MC_EXEC_APPROVE_SCHEMA = {
+    "name": "mc_exec_approve",
+    "description": (
+        "Respond to a pending MC exec-approval request via the Hermes "
+        "HITL bridge. Use when the operator types `/approve <req_id>`, "
+        "`/deny <req_id>`, or similar in Telegram. The bridge edits "
+        "the original TG message with the decision and POSTs MC's "
+        "respond endpoint. List pending req_ids with `mc_exec_approve_list`."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "req_id": {
+                "type": "string",
+                "description": (
+                    "The pending approval request id (visible in TG message "
+                    "and via `mc_exec_approve_list`)."
+                ),
+            },
+            "action": {
+                "type": "string",
+                "enum": ["approve", "deny", "always_allow"],
+                "description": (
+                    "Operator decision. `always_allow` adds the operation "
+                    "to the agent's allowlist so future identical requests "
+                    "don't need HITL."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional free-form reason recorded in MC + shown in "
+                    "the edited TG audit-trail message."
+                ),
+            },
+        },
+        "required": ["req_id", "action"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -537,4 +744,22 @@ registry.register(
     handler=_handle_mc_pipeline_cancel,
     check_fn=_check_mc_mode,
     emoji="✋",
+)
+
+registry.register(
+    name="mc_exec_approve_list",
+    toolset="kanban",
+    schema=MC_EXEC_APPROVE_LIST_SCHEMA,
+    handler=_handle_mc_exec_approve_list,
+    check_fn=_check_mc_mode,
+    emoji="📥",
+)
+
+registry.register(
+    name="mc_exec_approve",
+    toolset="kanban",
+    schema=MC_EXEC_APPROVE_SCHEMA,
+    handler=_handle_mc_exec_approve,
+    check_fn=_check_mc_mode,
+    emoji="✅",
 )
