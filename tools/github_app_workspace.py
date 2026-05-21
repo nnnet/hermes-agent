@@ -62,6 +62,73 @@ _ORG_ENV = "HERMES_GITHUB_ORG"
 _SLUG_BAD = re.compile(r"[^a-z0-9-]+")
 
 
+# Whitelist .gitignore for kanban workspaces. Kanban tasks often
+# download/produce large binary artefacts (audio from YouTube ingest,
+# video frames, model weights, vector DB snapshots, sqlite caches);
+# pushing those over GitHub's 100 MB per-file hard limit blocks the
+# entire commit and stalls the whole board mirror.
+#
+# Strategy: exclude EVERYTHING by default, then un-ignore the small
+# text-y artefact types worth keeping in git history (markdown notes,
+# code, configs, structured data). Workers that genuinely need a big
+# binary tracked can ``git add -f <path>`` once, or extend the per-task
+# ``.gitignore`` in their workspace.
+_DEFAULT_GITIGNORE = """# Hermes workspace .gitignore — auto-managed by
+# tools/github_app_workspace.py. Re-rendered on every workspace init.
+#
+# Whitelist mode: everything is ignored by default; only the file types
+# below are tracked. This keeps audio/video/model-weight blobs out of
+# the GitHub mirror without per-task curation. To track an exotic file
+# explicitly: ``git add -f path/to/file`` once.
+
+# Ignore EVERYTHING by default ...
+*
+
+# ... then opt-in to text-y artefact types worth preserving.
+!*/
+!.gitignore
+!*.md
+!*.markdown
+!*.txt
+!*.rst
+!*.json
+!*.jsonl
+!*.yaml
+!*.yml
+!*.toml
+!*.ini
+!*.cfg
+!*.csv
+!*.tsv
+!*.py
+!*.js
+!*.ts
+!*.tsx
+!*.jsx
+!*.html
+!*.css
+!*.sh
+!*.bash
+!*.sql
+!*.diff
+!*.patch
+!*.log.gz
+!Dockerfile
+!Makefile
+!README*
+!LICENSE*
+
+# Always exclude — these slip through the whitelist on extension but
+# are universally noise we never want.
+.cache/
+__pycache__/
+.venv/
+node_modules/
+*.pyc
+.DS_Store
+"""
+
+
 def is_configured() -> bool:
     """Return True when all three GitHub App env vars are present.
 
@@ -261,9 +328,17 @@ def ensure_remote_repo(
 
 
 def _run_git(args: list[str], *, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
-    """Thin git subprocess wrapper with sensible defaults."""
+    """Thin git subprocess wrapper with sensible defaults.
+
+    safe.directory=*: workspace dirs live on a host bind-mount under
+    /opt/data/kanban/workspaces/. Even when host UID matches the
+    container's hermes UID, git's recent "dubious ownership" guard
+    refuses to operate inside the tree on first contact. The kanban
+    workspace is intentionally writable by the agent — bypass the
+    check unconditionally. Risk: zero (we control the dir layout).
+    """
     return subprocess.run(
-        ["git", *args],
+        ["git", "-c", "safe.directory=*", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -313,12 +388,11 @@ def init_workspace_repo(path: Path, board_slug: str) -> bool:
     try:
         if not _is_git_repo(path):
             _run_git(["init", "-b", "main"], cwd=path)
-            (path / ".gitignore").write_text(
-                "# Hermes workspace .gitignore — keep secrets and bulky\n"
-                "# transient files out of the board repo.\n"
-                "*.log\n*.tmp\n*.swp\n__pycache__/\n.venv/\nnode_modules/\n",
-                encoding="utf-8",
-            )
+        # (Re)write .gitignore every init — operators may bump the list
+        # between releases and we want existing boards to pick up the
+        # tighter rules without manual intervention. The file is checked
+        # in (under VCS), so changes to it will land as a regular commit.
+        (path / ".gitignore").write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
 
         # Set/refresh origin every time — the token rotates each hour, so
         # the URL embedded last time may be stale.
