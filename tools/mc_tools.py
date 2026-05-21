@@ -63,21 +63,18 @@ logger = logging.getLogger(__name__)
 
 def _check_mc_mode() -> bool:
     """Why: We piggyback on the existing `_check_chief_mode` semantics so an
-    operator who's already configured the chief toolset gets MC tools too,
-    no new toggle to learn.
-    What: Returns True if the current profile is an orchestrator (has
-    kanban in toolsets) OR if we are running INSIDE a chief worker
-    (HERMES_KANBAN_TASK env var set).
+    operator who's already configured the chief/kanban toolset gets MC tools
+    too, no new toggle to learn.
+    What: Returns True if HERMES_KANBAN_TASK is set (in-worker), OR if the
+    current profile has kanban enabled either top-level OR via a
+    platform_toolsets composite (e.g. hermes-telegram-pm includes kanban).
     Test: tests/tools/test_mc_tools.py — covers both env paths.
     """
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
     try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        from tools.chief_tools import _profile_has_kanban_toolset
+        return _profile_has_kanban_toolset()
     except Exception:
         return False
 

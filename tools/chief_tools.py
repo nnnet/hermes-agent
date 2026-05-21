@@ -55,11 +55,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _profile_has_kanban_toolset() -> bool:
+    # Why: check_fn is global (no platform context), but kanban PM tools may
+    # be opted in either at the top-level (legacy CLI sessions) or via a
+    # platform_toolsets composite like `hermes-telegram-pm` that
+    # `includes: [kanban]`. Walk both so a platform-scoped opt-in unlocks
+    # mc_*/chief_* tools at registry-filter time. Schema visibility per
+    # session is still gated by resolve_toolset(enabled_toolsets).
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        toolsets = cfg.get("toolsets", []) or []
+        if "kanban" in toolsets:
+            return True
+        platform_toolsets = cfg.get("platform_toolsets", {}) or {}
+        try:
+            from toolsets import TOOLSETS
+        except Exception:
+            TOOLSETS = {}
+        stack: list[str] = []
+        for entries in platform_toolsets.values():
+            if isinstance(entries, list):
+                stack.extend(str(e) for e in entries)
+        seen: set[str] = set()
+        while stack:
+            name = stack.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            if name == "kanban":
+                return True
+            ts = TOOLSETS.get(name) if isinstance(TOOLSETS, dict) else None
+            if isinstance(ts, dict):
+                stack.extend(ts.get("includes") or [])
+        return False
     except Exception:
         return False
 
