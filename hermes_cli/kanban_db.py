@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -3290,6 +3291,13 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
+
+    GitHub mirror: when the operator has configured a GitHub App
+    (env: GITHUB_APP_ID/INSTALLATION_ID/PRIVATE_KEY_PATH), every board's
+    ``workspaces/`` root is also a git repo pushed to GitHub. The init +
+    initial push happens lazily on the first call here per board, then
+    each ``kanban_complete`` triggers a commit+push. Failures are
+    logged and never raise — the plain-dir behaviour is preserved.
     """
     kind = task.workspace_kind or "scratch"
     if kind == "scratch":
@@ -3306,6 +3314,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         else:
             p = workspaces_root(board=board) / task.id
         p.mkdir(parents=True, exist_ok=True)
+        _maybe_init_github_mirror(board=board)
         return p
     if kind == "dir":
         if not task.workspace_path:
@@ -3320,6 +3329,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
         p.mkdir(parents=True, exist_ok=True)
+        _maybe_init_github_mirror(board=board)
         return p
     if kind == "worktree":
         if not task.workspace_path:
@@ -3333,6 +3343,43 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             )
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
+
+
+_github_mirror_initialised: set[str] = set()
+
+
+def _maybe_init_github_mirror(*, board: Optional[str]) -> None:
+    """Per-process one-shot: init the board's ``workspaces/`` as a GitHub repo.
+
+    Why a module-level cache: a single dispatcher process resolves dozens of
+    workspaces per board over its lifetime. Calling ``ensure_remote_repo``
+    every time would burn API quota and slow each resolve down by ~1s.
+    The first successful init is cached by board slug; subsequent calls
+    short-circuit.
+
+    Failures don't poison the cache — next call retries (lets transient
+    network errors heal on their own).
+    """
+    try:
+        from tools.github_app_workspace import init_workspace_repo, is_configured
+    except Exception:
+        return
+    if not is_configured():
+        return
+    slug = _normalize_board_slug(board) or get_current_board()
+    if slug in _github_mirror_initialised:
+        return
+    repo_root = workspaces_root(board=slug)
+    try:
+        ok = init_workspace_repo(repo_root, slug)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "_maybe_init_github_mirror: unexpected error for board %s: %s",
+            slug, exc,
+        )
+        return
+    if ok:
+        _github_mirror_initialised.add(slug)
 
 
 def set_workspace_path(
