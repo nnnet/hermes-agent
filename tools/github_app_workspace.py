@@ -102,12 +102,47 @@ def _get_app_token() -> Optional[str]:
         return None
 
 
+def _build_app_jwt() -> Optional[str]:
+    """Build an App-level JWT for endpoints under /app/...
+
+    Mirrors the JWT step in ``GitHubAuth._try_github_app`` but returns the
+    JWT itself instead of trading it for an installation token. Used by
+    ``_get_org`` to query the App's installations (which requires
+    App-level auth, not the installation token).
+    """
+    app_id = os.environ.get("GITHUB_APP_ID")
+    key_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
+    if not (app_id and key_path):
+        return None
+    try:
+        import jwt  # PyJWT
+    except ImportError:
+        return None
+    try:
+        from pathlib import Path as _Path
+        import time as _time
+        key_file = _Path(key_path)
+        if not key_file.exists():
+            return None
+        private_key = key_file.read_text(encoding="utf-8")
+        now = int(_time.time())
+        payload = {"iat": now - 60, "exp": now + (10 * 60), "iss": app_id}
+        return jwt.encode(payload, private_key, algorithm="RS256")
+    except Exception as exc:
+        logger.debug("_build_app_jwt failed: %s", exc)
+        return None
+
+
 def _get_org(token: str) -> Optional[str]:
     """Resolve the org slug under which to create workspace repos.
 
     Priority:
       1. ``HERMES_GITHUB_ORG`` env (explicit override)
       2. The GitHub App's installation account (looked up via API)
+
+    ``token`` is the installation token (unused at this layer — the
+    ``/app/installations/<id>`` endpoint requires the App-level JWT
+    instead, which we build inline).
     """
     explicit = (os.environ.get(_ORG_ENV) or "").strip()
     if explicit:
@@ -115,11 +150,14 @@ def _get_org(token: str) -> Optional[str]:
     inst_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
     if not inst_id:
         return None
+    app_jwt = _build_app_jwt()
+    if not app_jwt:
+        return None
     try:
         resp = httpx.get(
             f"https://api.github.com/app/installations/{inst_id}",
             headers={
-                "Authorization": f"token {token}",
+                "Authorization": f"Bearer {app_jwt}",
                 "Accept": "application/vnd.github.v3+json",
             },
             timeout=10,
@@ -129,6 +167,11 @@ def _get_org(token: str) -> Optional[str]:
             login = account.get("login")
             if login:
                 return login
+        else:
+            logger.debug(
+                "installation lookup returned %s: %s",
+                resp.status_code, resp.text[:200],
+            )
     except Exception as exc:
         logger.debug("installation org lookup failed: %s", exc)
     return None
