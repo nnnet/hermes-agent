@@ -693,6 +693,115 @@ class TestMcAgentsList:
         assert out["ok"] is True
 
 
+class TestMcAgentCreate:
+    def test_requires_name(self, mc_tools):
+        out = mc_tools._handle_mc_agent_create({"role": "researcher"})
+        assert isinstance(out, str) and "name" in out
+
+    def test_requires_role(self, mc_tools):
+        out = mc_tools._handle_mc_agent_create({"name": "x"})
+        assert isinstance(out, str) and "role" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"agent": {
+            "id": 17, "name": "polymarket-quant",
+            "role": "trading-research",
+            "status": "offline",
+            "openclaw_id": "polymarket-quant",
+        }}) as p:
+            out = mc_tools._handle_mc_agent_create({
+                "name": "polymarket-quant",
+                "role": "trading-research",
+                "soul_content": "You research polymarket markets.",
+                "runtime_type": "hermes",
+                "template": "research-agent",
+            })
+        path, payload = p.call_args.args
+        assert path == "/api/agents"
+        assert payload["name"] == "polymarket-quant"
+        assert payload["role"] == "trading-research"
+        assert payload["soul_content"].startswith("You research")
+        assert payload["runtime_type"] == "hermes"
+        assert payload["template"] == "research-agent"
+        assert out["ok"] and out["agent_id"] == 17
+        assert out["status"] == "offline"
+
+    def test_optional_fields_omitted_when_none(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"agent": {"id": 1}}) as p:
+            mc_tools._handle_mc_agent_create({"name": "x", "role": "y"})
+        _, payload = p.call_args.args
+        assert payload == {"name": "x", "role": "y"}
+
+    def test_propagates_http_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post",
+                          side_effect=RuntimeError("HTTP 409: agent name already exists")):
+            out = mc_tools._handle_mc_agent_create({"name": "dup", "role": "qa"})
+        assert isinstance(out, str)
+        assert "mc_agent_create" in out and "409" in out
+
+
+class TestMcProjectCreate:
+    def test_requires_name(self, mc_tools):
+        out = mc_tools._handle_mc_project_create({})
+        assert isinstance(out, str) and "name" in out
+
+    def test_rejects_empty_name(self, mc_tools):
+        out = mc_tools._handle_mc_project_create({"name": "   "})
+        assert isinstance(out, str) and "name" in out
+
+    def test_happy_path(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"project": {
+            "id": 42, "slug": "polymarket-arb", "ticket_prefix": "PMARB",
+            "name": "Polymarket Arb Scanner",
+        }}) as p:
+            out = mc_tools._handle_mc_project_create({
+                "name": "Polymarket Arb Scanner",
+                "ticket_prefix": "PMARB",
+                "description": "edge scanner",
+                "github_repo": "nnnet/polymarket-arb",
+                "deadline": "2026-06-30",
+                "color": "#ff00ff",
+            })
+        path, payload = p.call_args.args
+        assert path == "/api/projects"
+        assert payload["name"] == "Polymarket Arb Scanner"
+        assert payload["ticket_prefix"] == "PMARB"
+        assert payload["description"] == "edge scanner"
+        assert payload["github_repo"] == "nnnet/polymarket-arb"
+        assert payload["deadline"] == "2026-06-30"
+        assert payload["color"] == "#ff00ff"
+        assert out["ok"] and out["project_id"] == 42
+        assert out["slug"] == "polymarket-arb"
+        assert out["ticket_prefix"] == "PMARB"
+
+    def test_optional_fields_omitted_when_none(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"project": {"id": 1}}) as p:
+            mc_tools._handle_mc_project_create({"name": "minimal"})
+        _, payload = p.call_args.args
+        assert payload == {"name": "minimal"}
+
+    def test_propagates_http_error(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post",
+                          side_effect=RuntimeError("HTTP 401: unauthorized")):
+            out = mc_tools._handle_mc_project_create({"name": "x"})
+        assert isinstance(out, str)
+        assert "mc_project_create" in out and "401" in out
+
+    def test_accepts_dispatch_kwargs(self, mc_tools, monkeypatch):
+        monkeypatch.setenv("HERMES_MC_BASE_URL", "http://x")
+        with patch.object(mc_tools, "_mc_post", return_value={"project": {"id": 1}}):
+            out = mc_tools._handle_mc_project_create(
+                {"name": "x"}, run_id="r1",
+            )
+        assert out["ok"] is True
+
+
 class TestMcTaskCreate:
     def test_requires_title(self, mc_tools):
         out = mc_tools._handle_mc_task_create({"project_id": 1})

@@ -115,12 +115,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # this block.
     if "kanban_show" in agent.valid_tool_names:
         tool_guidance.append(KANBAN_GUIDANCE)
-    # Operator/assistant delegation guidance — fires for the main chat
-    # agent that has chief_spawn (or mc_project_create) but is NOT inside
-    # a kanban worker process. Tells Hermes he's a personal assistant who
-    # routes non-trivial work to a team-lead and controls them, and that
-    # projects can stall/resume across chat sessions via the persistent
-    # kanban/MC board.
+    # Гермес-role delegation guidance — fires for the main chat agent
+    # that has chief_spawn (or mc_project_create) but is NOT inside a
+    # kanban worker process. Tells Hermes he plays the Гермес role
+    # (personal assistant), routes non-trivial work to a Тимлид
+    # (TeamLead) and controls them, and that projects can stall/resume
+    # across chat sessions via the persistent kanban/MC board.
     _can_delegate = (
         "chief_spawn" in agent.valid_tool_names
         or "mc_project_create" in agent.valid_tool_names

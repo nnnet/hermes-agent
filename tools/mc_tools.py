@@ -899,6 +899,134 @@ MC_TASK_GET_SCHEMA = {
 }
 
 
+def _handle_mc_project_create(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Create a new MC project. Required: name. Optional: description,
+    ticket_prefix, slug, github_repo, deadline, color."""
+    name = args.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return tool_error("mc_project_create: 'name' (non-empty string) is required")
+
+    payload: dict[str, Any] = {"name": name.strip()}
+    for k in ("description", "ticket_prefix", "slug",
+              "github_repo", "deadline", "color"):
+        v = args.get(k)
+        if v is not None:
+            payload[k] = v
+
+    try:
+        raw = _mc_post("/api/projects", payload)
+    except RuntimeError as e:
+        return tool_error(f"mc_project_create: {e}")
+    project = raw.get("project") or raw
+    return {
+        "ok": True,
+        "project_id": project.get("id"),
+        "slug": project.get("slug"),
+        "ticket_prefix": project.get("ticket_prefix"),
+        "name": project.get("name"),
+    }
+
+
+MC_PROJECT_CREATE_SCHEMA = {
+    "name": "mc_project_create",
+    "description": (
+        "Create a new MC project. Required: name. Optional: description, "
+        "ticket_prefix (e.g. 'PMARB' — short uppercase prefix used for "
+        "ticket refs like PMARB-1, PMARB-2), slug (URL-safe identifier; "
+        "auto-derived from name if omitted), github_repo, deadline "
+        "(ISO 8601 date), color. Returns project_id, slug, ticket_prefix. "
+        "Use this BEFORE chief_spawn(profile='mc-pm-chief') and pass the "
+        "returned project_id inside the chief brief so the mc-pm-chief "
+        "worker knows which MC project to populate with tasks."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "ticket_prefix": {"type": "string"},
+            "slug": {"type": "string"},
+            "github_repo": {"type": "string"},
+            "deadline": {"type": "string"},
+            "color": {"type": "string"},
+        },
+        "required": ["name"],
+    },
+}
+
+
+def _handle_mc_agent_create(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+    """Create a new MC agent. Required: name, role. Optional: soul_content,
+    template, runtime_type, openclaw_id, status. Use this when Тимлид needs
+    a team-member role that no existing MC agent covers — check
+    mc_agents_list FIRST to avoid duplicates."""
+    name = args.get("name")
+    role = args.get("role")
+    if not isinstance(name, str) or not name.strip():
+        return tool_error("mc_agent_create: 'name' (non-empty string) is required")
+    if not isinstance(role, str) or not role.strip():
+        return tool_error("mc_agent_create: 'role' (non-empty string) is required")
+
+    payload: dict[str, Any] = {
+        "name": name.strip(),
+        "role": role.strip(),
+    }
+    for k in ("openclaw_id", "session_key", "soul_content", "status",
+              "template", "runtime_type"):
+        v = args.get(k)
+        if v is not None:
+            payload[k] = v
+    if isinstance(args.get("config"), dict):
+        payload["config"] = args["config"]
+    if isinstance(args.get("gateway_config"), dict):
+        payload["gateway_config"] = args["gateway_config"]
+
+    try:
+        raw = _mc_post("/api/agents", payload)
+    except RuntimeError as e:
+        return tool_error(f"mc_agent_create: {e}")
+    agent = raw.get("agent") or raw
+    return {
+        "ok": True,
+        "agent_id": agent.get("id"),
+        "name": agent.get("name"),
+        "role": agent.get("role"),
+        "status": agent.get("status"),
+        "openclaw_id": agent.get("openclaw_id"),
+    }
+
+
+MC_AGENT_CREATE_SCHEMA = {
+    "name": "mc_agent_create",
+    "description": (
+        "Create a new MC agent (for Тимлид when no existing agent covers "
+        "the needed role). Required: name, role. Optional: soul_content "
+        "(agent's prompt/persona, up to 50000 chars), template (preset "
+        "name like 'research-agent'), runtime_type "
+        "('hermes'/'openclaw'/'claude'/'codex'/'custom'), openclaw_id "
+        "(kebab-case ID; auto-derived from name if omitted), status "
+        "(default 'offline'). MUST check mc_agents_list first — never "
+        "create duplicates. Returns agent_id."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "role": {"type": "string"},
+            "soul_content": {"type": "string"},
+            "template": {"type": "string"},
+            "runtime_type": {"type": "string"},
+            "openclaw_id": {"type": "string"},
+            "session_key": {"type": "string"},
+            "status": {"type": "string"},
+            "config": {"type": "object"},
+            "gateway_config": {"type": "object"},
+        },
+        "required": ["name", "role"],
+    },
+}
+
+
 def _handle_mc_task_create(args: dict[str, Any], **_kw: Any) -> dict[str, Any]:
     """Create a new MC task. Required: title, project_id. Optional:
     description, assigned_to, priority, status, tags."""
@@ -1131,6 +1259,24 @@ registry.register(
     handler=_handle_mc_task_get,
     check_fn=_check_mc_mode,
     emoji="🔎",
+)
+
+registry.register(
+    name="mc_project_create",
+    toolset="kanban",
+    schema=MC_PROJECT_CREATE_SCHEMA,
+    handler=_handle_mc_project_create,
+    check_fn=_check_mc_mode,
+    emoji="🆕",
+)
+
+registry.register(
+    name="mc_agent_create",
+    toolset="kanban",
+    schema=MC_AGENT_CREATE_SCHEMA,
+    handler=_handle_mc_agent_create,
+    check_fn=_check_mc_mode,
+    emoji="🤖",
 )
 
 registry.register(
