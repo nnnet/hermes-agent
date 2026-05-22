@@ -115,6 +115,26 @@ def _check_chief_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _check_chief_worker_only() -> bool:
+    """tg_send / tg_ask / tg_ask_status are worker-side only — they require
+    a chief board context. Hermes-main has its own TG channel; it doesn't
+    need (and shouldn't have) these. Gating here is intentionally narrow:
+    a dispatcher-spawned task (HERMES_KANBAN_TASK set) on a chief board.
+    Root-vs-under-chief enforcement happens inside the handlers
+    (_is_root_chief) so the operator gets a clear error rather than a
+    missing tool.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+    board = os.environ.get("HERMES_KANBAN_BOARD")
+    if not board:
+        return False
+    try:
+        return _read_chief_meta(board) is not None
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Constants & helpers
 # ---------------------------------------------------------------------------
@@ -125,6 +145,22 @@ DEFAULT_LIFETIME = "ephemeral"
 DEFAULT_TERMINATE_POLICY = "cascade"
 DEFAULT_MAX_RUNTIME_MIN = 120
 MAX_NEST_DEPTH = 3  # parent → child → grandchild; further is rejected
+
+# Anti-spam guard for chief→operator messaging. Must match bridge enum.
+CHIEF_SEND_INTENTS = {
+    "milestone", "delivery_complete", "unblocked", "escalation_resolved",
+}
+CHIEF_ASK_INTENTS = {
+    "blocker_clarify", "scope_check", "credential_needed", "decision_required",
+}
+CHIEF_MSG_MIN_LEN = 30
+
+# Followup supervisor script. Lives in $HERMES_HOME/scripts/. Hermes can
+# wire it up to a `cronjob: create` so the assistant keeps the spawned
+# chief in view without hand-waving timers. We do NOT auto-create the
+# cron — that's the assistant's call; we only provide the script.
+CHIEF_SUPERVISOR_SCRIPT = "chief_followup.py"
+CHIEF_SUPERVISOR_DEFAULT_SCHEDULE = "every 1m"
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -248,6 +284,257 @@ def _derive_stage(initial_task: Optional[dict], events: list) -> str:
 
 
 # ---------------------------------------------------------------------------
+# chief→operator messaging helpers (Phase 2 — tg_send / tg_ask)
+# ---------------------------------------------------------------------------
+
+def _is_root_chief() -> tuple[bool, Optional[str]]:
+    """True iff the current worker is a *root* chief (depth=1, no parent).
+    Returns (ok, reason_if_not). Under-chiefs (parent_chief_id != None) and
+    non-chief workers are denied access to tg_send / tg_ask — they must
+    surface through kanban_comment → parent's chief_status pipeline.
+    """
+    board = os.environ.get("HERMES_KANBAN_BOARD")
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not board or not task_id:
+        return False, "tg_send/tg_ask are only available to chief workers"
+    meta = _read_chief_meta(board)
+    if not meta:
+        return False, (
+            "current board is not a chief board; this tool is only "
+            "available to chief-manager workers"
+        )
+    if meta.get("parent_chief_id"):
+        return False, (
+            "under-chiefs cannot push to the operator directly. Write a "
+            "kanban_comment on your initial task — the parent chief will "
+            "see it via chief_status and decide whether to escalate."
+        )
+    return True, None
+
+
+def _resolve_operator_chat_id() -> Optional[int]:
+    """Read operator chat_id from env (dispatcher propagates from board
+    metadata at spawn time). Returns None if unset."""
+    raw = (os.environ.get("HERMES_OPERATOR_CHAT_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _hitl_bridge_url() -> str:
+    return (
+        os.environ.get("HERMES_HITL_BRIDGE_URL")
+        or "http://hermes-hitl:8889"
+    ).rstrip("/")
+
+
+def _post_hitl(path: str, body: dict) -> tuple[int, dict]:
+    """Thin httpx POST helper. Returns (status_code, parsed_or_text)."""
+    import httpx
+    url = f"{_hitl_bridge_url()}{path}"
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(url, json=body)
+    except httpx.HTTPError as e:
+        return 0, {"error": "bridge_unreachable", "detail": str(e)[:200]}
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return resp.status_code, {"raw": resp.text[:500]}
+
+
+def _get_hitl(path: str) -> tuple[int, dict]:
+    import httpx
+    url = f"{_hitl_bridge_url()}{path}"
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(url)
+    except httpx.HTTPError as e:
+        return 0, {"error": "bridge_unreachable", "detail": str(e)[:200]}
+    try:
+        return resp.status_code, resp.json()
+    except ValueError:
+        return resp.status_code, {"raw": resp.text[:500]}
+
+
+def _handle_tg_send(args: dict, **kw) -> str:
+    """Direct fire-and-forget push to the operator's TG chat. Rate-limited
+    by the bridge; root-chief only; intent-gated; min length 30."""
+    ok, why = _is_root_chief()
+    if not ok:
+        return tool_error(f"tg_send: {why}")
+    text = (args.get("text") or "").strip()
+    intent = (args.get("intent") or "").strip()
+    if intent not in CHIEF_SEND_INTENTS:
+        return tool_error(
+            f"tg_send: intent must be one of {sorted(CHIEF_SEND_INTENTS)}, "
+            f"got {intent!r}. If none fits — this probably belongs in a "
+            f"kanban_comment, not a TG push."
+        )
+    if len(text) < CHIEF_MSG_MIN_LEN:
+        return tool_error(
+            f"tg_send: text must be ≥{CHIEF_MSG_MIN_LEN} chars. Be "
+            f"specific — operator's attention is finite, every push must "
+            f"earn its place."
+        )
+    chat_id = _resolve_operator_chat_id()
+    if chat_id is None:
+        return tool_error(
+            "tg_send: HERMES_OPERATOR_CHAT_ID is not set on this worker. "
+            "Either the dispatcher didn't propagate it, or chief_spawn "
+            "was called without operator_chat_id. Write kanban_comment "
+            "instead — orchestrator will see it via chief_status."
+        )
+    body = {
+        "chief_id": os.environ.get("HERMES_KANBAN_BOARD"),
+        "agent_id": os.environ.get("HERMES_PROFILE"),
+        "task_id": os.environ.get("HERMES_KANBAN_TASK"),
+        "chat_id": chat_id,
+        "intent": intent,
+        "text": text,
+    }
+    status, payload = _post_hitl("/chief/send", body)
+    if status == 200 and payload.get("ok"):
+        return _json_ok({
+            "delivered": True,
+            "req_id": payload.get("req_id"),
+            "intent": intent,
+        })
+    if status == 429:
+        return tool_error(
+            "tg_send: rate-limited by bridge — "
+            f"{payload.get('hint') or payload}"
+        )
+    return tool_error(
+        f"tg_send: bridge HTTP {status}: {payload}"
+    )
+
+
+def _handle_tg_ask(args: dict, **kw) -> str:
+    """HITL clarification request — chief asks, operator answers free-text.
+    Non-blocking: returns req_id; chief polls tg_ask_status(req_id).
+    """
+    ok, why = _is_root_chief()
+    if not ok:
+        return tool_error(f"tg_ask: {why}")
+    question = (args.get("question") or "").strip()
+    intent = (args.get("intent") or "").strip()
+    if intent not in CHIEF_ASK_INTENTS:
+        return tool_error(
+            f"tg_ask: intent must be one of {sorted(CHIEF_ASK_INTENTS)}, "
+            f"got {intent!r}."
+        )
+    if len(question) < CHIEF_MSG_MIN_LEN:
+        return tool_error(
+            f"tg_ask: question must be ≥{CHIEF_MSG_MIN_LEN} chars. "
+            f"State the specific decision / piece of info you need."
+        )
+    chat_id = _resolve_operator_chat_id()
+    if chat_id is None:
+        return tool_error(
+            "tg_ask: HERMES_OPERATOR_CHAT_ID is not set on this worker."
+        )
+    body = {
+        "chief_id": os.environ.get("HERMES_KANBAN_BOARD"),
+        "agent_id": os.environ.get("HERMES_PROFILE"),
+        "task_id": os.environ.get("HERMES_KANBAN_TASK"),
+        "chat_id": chat_id,
+        "intent": intent,
+        "question": question,
+        "context": (args.get("context") or None),
+        "options": args.get("options"),
+        "timeout_sec": args.get("timeout_sec"),
+    }
+    status, payload = _post_hitl("/chief/ask", body)
+    if status == 200 and payload.get("ok"):
+        return _json_ok({
+            "req_id": payload.get("req_id"),
+            "expires_at": payload.get("expires_at"),
+            "timeout_sec": payload.get("timeout_sec"),
+            "hint": (
+                "Poll with tg_ask_status(req_id) every 30-60s. Don't "
+                "block the project waiting — keep working on independent "
+                "sub-tasks. Operator may take minutes to answer."
+            ),
+        })
+    if status == 429:
+        return tool_error(
+            "tg_ask: rate-limited by bridge — "
+            f"{payload.get('hint') or payload}"
+        )
+    return tool_error(f"tg_ask: bridge HTTP {status}: {payload}")
+
+
+def _handle_chief_answer_question(args: dict, **kw) -> str:
+    """Operator-side tool (Hermes-main): deliver a free-text answer or
+    decline to a pending chief_ask. Called when the operator types
+    `/answer <req_id> <text>` or `/decline <req_id>` in TG. Forwards to
+    hitl-bridge /chief/answer; bridge stores the answer and the chief
+    picks it up via tg_ask_status.
+    """
+    req_id = (args.get("req_id") or "").strip()
+    if not req_id:
+        return tool_error("chief_answer_question: 'req_id' is required")
+    decision = (args.get("decision") or "answered").strip()
+    if decision not in ("answered", "declined"):
+        return tool_error(
+            "chief_answer_question: decision must be 'answered' or 'declined'"
+        )
+    answer = (args.get("answer") or "").strip() if decision == "answered" else None
+    if decision == "answered" and not answer:
+        return tool_error(
+            "chief_answer_question: 'answer' is required when decision="
+            "'answered'"
+        )
+    body = {"req_id": req_id, "decision": decision, "answer": answer}
+    status, payload = _post_hitl("/chief/answer", body)
+    if status == 200 and payload.get("ok"):
+        return _json_ok({
+            "delivered": True,
+            "req_id": req_id,
+            "decision": decision,
+        })
+    if status == 404:
+        return tool_error(
+            f"chief_answer_question: unknown req_id {req_id!r}. The "
+            f"question may have expired or never existed."
+        )
+    if status == 409:
+        return tool_error(
+            f"chief_answer_question: req_id {req_id!r} already resolved "
+            f"({payload.get('decision') or payload})"
+        )
+    return tool_error(
+        f"chief_answer_question: bridge HTTP {status}: {payload}"
+    )
+
+
+def _handle_tg_ask_status(args: dict, **kw) -> str:
+    """Poll the bridge for a chief_ask answer."""
+    ok, why = _is_root_chief()
+    if not ok:
+        return tool_error(f"tg_ask_status: {why}")
+    req_id = (args.get("req_id") or "").strip()
+    if not req_id:
+        return tool_error("tg_ask_status: 'req_id' is required")
+    status, payload = _get_hitl(f"/chief/ask/{req_id}")
+    if status == 200 and payload.get("ok"):
+        return _json_ok({
+            "status": payload.get("status"),
+            "decision": payload.get("decision"),
+            "answer": payload.get("answer"),
+            "decided_at": payload.get("decided_at"),
+            "expires_at": payload.get("expires_at"),
+        })
+    if status == 404:
+        return tool_error(f"tg_ask_status: unknown req_id {req_id!r}")
+    return tool_error(f"tg_ask_status: bridge HTTP {status}: {payload}")
+
+
+# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -287,6 +574,37 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
     if err:
         return tool_error(err)
 
+    # operator_chat_id — propagated to worker env so tg_send / tg_ask know
+    # where to deliver. Resolution order: explicit arg → spawning chief's
+    # own metadata (cascade for nested) → spawner env. Stored in board
+    # metadata so dispatcher can read it at worker spawn time without
+    # re-resolving.
+    operator_chat_id: Optional[int] = None
+    raw_cid = args.get("operator_chat_id")
+    if raw_cid not in (None, ""):
+        try:
+            operator_chat_id = int(raw_cid)
+        except (TypeError, ValueError):
+            return tool_error(
+                "chief_spawn: operator_chat_id must be an integer "
+                "(Telegram chat id)"
+            )
+    if operator_chat_id is None and parent_chief_id:
+        parent_meta = _read_chief_meta(parent_chief_id) or {}
+        inherited = parent_meta.get("operator_chat_id")
+        if inherited is not None:
+            try:
+                operator_chat_id = int(inherited)
+            except (TypeError, ValueError):
+                pass
+    if operator_chat_id is None:
+        env_cid = (os.environ.get("HERMES_OPERATOR_CHAT_ID") or "").strip()
+        if env_cid:
+            try:
+                operator_chat_id = int(env_cid)
+            except ValueError:
+                operator_chat_id = None
+
     # Optional profile override — lets the operator route a project to a
     # specialised chief (e.g. `mc-pm-chief` which drives Mission Control)
     # instead of the default `chief-manager`. The profile must exist on
@@ -316,6 +634,7 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
         "parent_chief_id": parent_chief_id,
         "spawned_at": now,
         "spawned_by_task": os.environ.get("HERMES_KANBAN_TASK"),
+        "operator_chat_id": operator_chat_id,
     }
 
     try:
@@ -369,6 +688,7 @@ def _handle_chief_spawn(args: dict, **kw) -> str:
         "lifetime": lifetime,
         "terminate_policy": terminate_policy,
         "parent_chief_id": parent_chief_id,
+        "operator_chat_id": operator_chat_id,
     })
 
 
@@ -643,6 +963,18 @@ CHIEF_SPAWN_SCHEMA = {
                     "another. main:manager should usually omit this."
                 ),
             },
+            "operator_chat_id": {
+                "type": "integer",
+                "description": (
+                    "Telegram chat_id of the operator who owns the "
+                    "project. Stored on the chief's board metadata and "
+                    "propagated to workers as HERMES_OPERATOR_CHAT_ID — "
+                    "needed for tg_send / tg_ask. main:manager should "
+                    "pass the current operator's chat_id (resolvable "
+                    "from the active platform session). Sub-chiefs "
+                    "inherit from parent if omitted."
+                ),
+            },
         },
         "required": ["name", "brief"],
     },
@@ -690,6 +1022,161 @@ CHIEF_LIST_SCHEMA = {
         "required": [],
     },
 }
+
+TG_SEND_SCHEMA = {
+    "name": "tg_send",
+    "description": (
+        "Push a short message directly to the operator's Telegram chat. "
+        "Fire-and-forget — there is NO operator response. Reserved for "
+        "material moments: milestones reached, deliverables ready, an "
+        "earlier escalation resolved, work unblocked. NOT for status "
+        "updates (use kanban_comment — orchestrator polls via "
+        "chief_status), NOT for trivia, NOT for thanks. Rate-limited "
+        "(default 2/hour, 6/day per chief). Available only to root "
+        "chiefs — under-chiefs must surface through their parent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": (
+                    "The message body (≥30 chars). Be specific and "
+                    "self-contained — operator may not have the chief's "
+                    "context loaded."
+                ),
+            },
+            "intent": {
+                "type": "string",
+                "enum": sorted(CHIEF_SEND_INTENTS),
+                "description": (
+                    "Why this push is justified. milestone: significant "
+                    "phase done. delivery_complete: deliverable shipped. "
+                    "unblocked: previously-stuck work resumed. "
+                    "escalation_resolved: earlier escalation closed."
+                ),
+            },
+        },
+        "required": ["text", "intent"],
+    },
+}
+
+TG_ASK_SCHEMA = {
+    "name": "tg_ask",
+    "description": (
+        "Ask the operator a clarifying question via Telegram. Non-blocking: "
+        "returns a req_id; poll tg_ask_status(req_id) for the operator's "
+        "free-text answer (or 'expired' / 'declined' status). Keep "
+        "working on independent sub-tasks while waiting. Rate-limited "
+        "(default 3/hour, 8/day per chief). Available only to root chiefs."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": (
+                    "The specific question (≥30 chars). Frame it so the "
+                    "answer maps to a concrete next action."
+                ),
+            },
+            "intent": {
+                "type": "string",
+                "enum": sorted(CHIEF_ASK_INTENTS),
+                "description": (
+                    "Why you need to interrupt. blocker_clarify: cannot "
+                    "proceed without input. scope_check: need go/no-go "
+                    "before irreversible work. credential_needed: "
+                    "secret/access missing. decision_required: plan "
+                    "branch only operator can choose."
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": (
+                    "Optional short context (≤800 chars) so operator "
+                    "doesn't need to ask back 'what?'. Skip if the "
+                    "question is self-explanatory."
+                ),
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of choices, surfaced as a hint to the "
+                    "operator. Operator can still answer free-text."
+                ),
+            },
+            "timeout_sec": {
+                "type": "integer",
+                "description": (
+                    "How long to wait for an answer before the request "
+                    "expires. Default 600 (10 min), max 1800 (30 min)."
+                ),
+            },
+        },
+        "required": ["question", "intent"],
+    },
+}
+
+CHIEF_ANSWER_QUESTION_SCHEMA = {
+    "name": "chief_answer_question",
+    "description": (
+        "Deliver the operator's free-text answer (or decline) to a "
+        "pending chief tg_ask. Call this when the operator replies in "
+        "TG with `/answer <req_id> <text>` or `/decline <req_id>` to a "
+        "chief's question. The chief polls tg_ask_status to pick up the "
+        "answer. Use req_id from the original ❓ Chief asks message — "
+        "you can also list outstanding asks via chief_pending."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "req_id": {
+                "type": "string",
+                "description": "req_id of the chief's outstanding question.",
+            },
+            "decision": {
+                "type": "string",
+                "enum": ["answered", "declined"],
+                "description": (
+                    "'answered' delivers `answer` text to the chief; "
+                    "'declined' tells the chief the operator chose not "
+                    "to answer."
+                ),
+            },
+            "answer": {
+                "type": "string",
+                "description": (
+                    "The operator's free-text answer. Required when "
+                    "decision='answered'. Omit for decline."
+                ),
+            },
+        },
+        "required": ["req_id"],
+    },
+}
+
+TG_ASK_STATUS_SCHEMA = {
+    "name": "tg_ask_status",
+    "description": (
+        "Poll for the operator's answer to a prior tg_ask. Returns "
+        "{status: 'pending'|'resolved'|'expired', decision?, answer?}. "
+        "Call periodically (every 30-60s) while waiting — never spin in "
+        "a tight loop."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "req_id": {
+                "type": "string",
+                "description": "req_id returned by tg_ask.",
+            },
+        },
+        "required": ["req_id"],
+    },
+}
+
 
 CHIEF_TERMINATE_SCHEMA = {
     "name": "chief_terminate",
@@ -761,4 +1248,43 @@ registry.register(
     handler=_handle_chief_terminate,
     check_fn=_check_chief_mode,
     emoji="🛑",
+)
+
+registry.register(
+    name="tg_send",
+    toolset="kanban",
+    schema=TG_SEND_SCHEMA,
+    handler=_handle_tg_send,
+    check_fn=_check_chief_worker_only,
+    emoji="📣",
+)
+
+registry.register(
+    name="tg_ask",
+    toolset="kanban",
+    schema=TG_ASK_SCHEMA,
+    handler=_handle_tg_ask,
+    check_fn=_check_chief_worker_only,
+    emoji="❓",
+)
+
+registry.register(
+    name="tg_ask_status",
+    toolset="kanban",
+    schema=TG_ASK_STATUS_SCHEMA,
+    handler=_handle_tg_ask_status,
+    check_fn=_check_chief_worker_only,
+    emoji="🔁",
+)
+
+registry.register(
+    name="chief_answer_question",
+    toolset="kanban",
+    schema=CHIEF_ANSWER_QUESTION_SCHEMA,
+    handler=_handle_chief_answer_question,
+    # Operator-side: available to orchestrators (Hermes-main), NOT to
+    # chief workers (they should use tg_ask, not pretend to answer
+    # themselves). Same gate as the other chief_* orchestrator tools.
+    check_fn=_check_chief_mode,
+    emoji="↩️",
 )

@@ -4598,6 +4598,25 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # operator_chat_id propagation for chief workers — read from board
+    # metadata (chief_spawn writes it there). Lets tg_send / tg_ask
+    # resolve their delivery target without the worker having to walk
+    # the board json itself. Best-effort: missing metadata is fine for
+    # non-chief workers and for chief workers spawned without an
+    # operator (they'll just get a clear error from tg_send).
+    try:
+        chief_meta = read_board_metadata(resolved_board)
+    except Exception:
+        chief_meta = None
+    if isinstance(chief_meta, dict):
+        cid = chief_meta.get("operator_chat_id")
+        if cid not in (None, ""):
+            env["HERMES_OPERATOR_CHAT_ID"] = str(cid)
+    # HITL bridge URL — default points at the docker-compose hostname;
+    # operators on different topologies can override via the parent env.
+    if "HERMES_HITL_BRIDGE_URL" not in env:
+        env["HERMES_HITL_BRIDGE_URL"] = "http://hermes-hitl:8889"
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,

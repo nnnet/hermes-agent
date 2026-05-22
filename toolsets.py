@@ -73,6 +73,25 @@ _HERMES_CORE_TOOLS = [
 ]
 
 
+# Assistant-only subset: same as _HERMES_CORE_TOOLS but strips the four
+# implementation tools that pull Hermes-main into doing project work
+# himself (terminal, execute_code, write_file, patch, process). Read-only
+# inspection stays in, since the assistant still needs to look at things
+# to brief his team or report to the user. Use this for operator chats
+# where Hermes must delegate via chief_spawn / mc_project_create instead
+# of imple­menting in-chat.
+_HERMES_ASSISTANT_TOOLS = [
+    t for t in _HERMES_CORE_TOOLS
+    if t not in {
+        "terminal",
+        "process",
+        "execute_code",
+        "write_file",
+        "patch",
+    }
+]
+
+
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
@@ -416,6 +435,27 @@ TOOLSETS = {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
+    },
+
+    "hermes-telegram-assistant": {
+        # Telegram assistant toolset — Hermes-main runs as a PERSONAL
+        # ASSISTANT here, not a developer. No terminal / execute_code /
+        # write_file / patch / process. Project work must go through
+        # `chief_spawn` / `mc_project_create` (kanban gives delegation
+        # tools) — the assistant cannot fall back to implementing it
+        # himself even if the LLM is tempted. Use this for Telegram
+        # operator chats by setting:
+        #   platform_toolsets.telegram:
+        #     - hermes-telegram-assistant
+        "description": (
+            "Telegram personal-assistant toolset — read + delegate, NO "
+            "implementation tools. Same kanban delegation surface as "
+            "hermes-telegram-pm but strips execute_code/terminal/write_file/"
+            "patch/process so role drift into developer mode is impossible "
+            "by construction."
+        ),
+        "tools": _HERMES_ASSISTANT_TOOLS,
+        "includes": ["kanban"],
     },
 
     "hermes-telegram-pm": {

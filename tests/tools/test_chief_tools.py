@@ -317,11 +317,282 @@ def test_chief_terminate_rejects_unknown_chief(hermes_env):
 # ---------------------------------------------------------------------------
 
 def test_chief_tools_registered_under_kanban_toolset(hermes_env):
-    """The 4 chief tools must be present in the kanban toolset registry."""
+    """All chief tools must be present in the kanban toolset registry."""
     chief_tools, _ = hermes_env
     from tools.registry import registry
-    for name in ("chief_spawn", "chief_status", "chief_list", "chief_terminate"):
+    expected = (
+        "chief_spawn", "chief_status", "chief_list", "chief_terminate",
+        "tg_send", "tg_ask", "tg_ask_status", "chief_answer_question",
+    )
+    for name in expected:
         entry = registry.get_entry(name)
         assert entry is not None, f"{name} not registered"
         assert entry.toolset == "kanban"
         assert entry.emoji  # set
+
+
+# ---------------------------------------------------------------------------
+# tg_send / tg_ask / tg_ask_status — chief→operator messaging (Phase 2)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def chief_worker_env(hermes_env, monkeypatch):
+    """Spawn a root chief, then enter its worker context (env vars set
+    by the dispatcher) — so tg_* gates pass."""
+    chief_tools, kanban_db = hermes_env
+    spawn = _parse(chief_tools._handle_chief_spawn({
+        "name": "ops", "brief": "do ops", "operator_chat_id": 1234567,
+    }))
+    chief_id = spawn["chief_id"]
+    task_id = spawn["initial_task"]
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", chief_id)
+    monkeypatch.setenv("HERMES_OPERATOR_CHAT_ID", "1234567")
+    monkeypatch.setenv("HERMES_HITL_BRIDGE_URL", "http://hitl-stub")
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+    return chief_tools, chief_id, task_id
+
+
+def test_tg_send_rejects_bad_intent(chief_worker_env, monkeypatch):
+    chief_tools, _, _ = chief_worker_env
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "x" * 50, "intent": "casual_chat",
+    }))
+    assert r.get("error") and "intent" in r["error"]
+
+
+def test_tg_send_rejects_short_text(chief_worker_env):
+    chief_tools, _, _ = chief_worker_env
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "ok",  # <30
+        "intent": "milestone",
+    }))
+    assert r.get("error") and "30" in r["error"]
+
+
+def test_tg_send_rejects_under_chief(hermes_env, monkeypatch):
+    """Under-chiefs must NOT have access to tg_send. The handler should
+    reject them with a clear hint to surface through parent."""
+    chief_tools, _ = hermes_env
+    # Spawn parent, then under-chief.
+    parent = _parse(chief_tools._handle_chief_spawn({
+        "name": "p", "brief": "parent", "operator_chat_id": 1,
+    }))
+    under = _parse(chief_tools._handle_chief_spawn({
+        "name": "u", "brief": "under", "parent_chief_id": parent["chief_id"],
+    }))
+    # Enter under-chief worker context.
+    monkeypatch.setenv("HERMES_KANBAN_TASK", under["initial_task"])
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", under["chief_id"])
+    monkeypatch.setenv("HERMES_OPERATOR_CHAT_ID", "1")
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "valid text long enough to pass minimum length",
+        "intent": "milestone",
+    }))
+    assert r.get("error") and "under-chiefs" in r["error"]
+
+
+def test_tg_send_rejects_when_no_operator_chat_id(chief_worker_env, monkeypatch):
+    chief_tools, _, _ = chief_worker_env
+    monkeypatch.delenv("HERMES_OPERATOR_CHAT_ID", raising=False)
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "valid text long enough to pass minimum length check ok",
+        "intent": "milestone",
+    }))
+    assert r.get("error") and "OPERATOR_CHAT_ID" in r["error"]
+
+
+def test_tg_send_posts_to_bridge_on_happy_path(chief_worker_env, monkeypatch):
+    """Mock httpx so we don't need a live bridge; verify POST shape."""
+    chief_tools, chief_id, task_id = chief_worker_env
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"ok": True, "req_id": "abc", "tg_message_id": 42}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "Phase 1 complete: indexed 500 documents in 12 min.",
+        "intent": "milestone",
+    }))
+    assert r.get("ok") and r["delivered"] is True
+    assert r["req_id"] == "abc"
+    assert captured["url"].endswith("/chief/send")
+    body = captured["body"]
+    assert body["chief_id"] == chief_id
+    assert body["task_id"] == task_id
+    assert body["chat_id"] == 1234567
+    assert body["intent"] == "milestone"
+
+
+def test_tg_ask_returns_req_id_for_polling(chief_worker_env, monkeypatch):
+    chief_tools, *_ = chief_worker_env
+
+    class _FakeResp:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {
+                "ok": True, "req_id": "q1",
+                "expires_at": 12345.0, "timeout_sec": 600,
+            }
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json=None):
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    r = _parse(chief_tools._handle_tg_ask({
+        "question": "Should I deploy to prod now, or wait for tomorrow's window?",
+        "intent": "decision_required",
+    }))
+    assert r.get("ok") and r["req_id"] == "q1"
+
+
+def test_tg_ask_status_returns_resolved_payload(chief_worker_env, monkeypatch):
+    chief_tools, *_ = chief_worker_env
+
+    class _FakeResp:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {
+                "ok": True, "status": "resolved",
+                "decision": "answered", "answer": "go ahead",
+                "decided_at": 1.0, "expires_at": 2.0,
+            }
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def get(self, url):
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    r = _parse(chief_tools._handle_tg_ask_status({"req_id": "q1"}))
+    assert r["status"] == "resolved"
+    assert r["answer"] == "go ahead"
+
+
+def test_tg_send_rate_limited_passthrough(chief_worker_env, monkeypatch):
+    """Bridge 429 should surface as a helpful tool_error."""
+    chief_tools, *_ = chief_worker_env
+
+    class _FakeResp:
+        status_code = 429
+        text = ""
+        def json(self):
+            return {
+                "error": "rate_limited",
+                "hint": "you hit 2/hour — use kanban_comment instead",
+            }
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json=None):
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    r = _parse(chief_tools._handle_tg_send({
+        "text": "Some milestone message that easily clears the threshold.",
+        "intent": "milestone",
+    }))
+    assert r.get("error") and "rate-limited" in r["error"]
+    assert "kanban_comment" in r["error"]
+
+
+def test_chief_spawn_persists_operator_chat_id(hermes_env):
+    chief_tools, kanban_db = hermes_env
+    r = _parse(chief_tools._handle_chief_spawn({
+        "name": "ops", "brief": "do ops", "operator_chat_id": 9876543,
+    }))
+    assert r["operator_chat_id"] == 9876543
+    meta = kanban_db.read_board_metadata(r["chief_id"])
+    assert meta.get("operator_chat_id") == 9876543
+
+
+def test_chief_spawn_inherits_operator_chat_id_from_parent(hermes_env):
+    chief_tools, kanban_db = hermes_env
+    parent = _parse(chief_tools._handle_chief_spawn({
+        "name": "p", "brief": "parent", "operator_chat_id": 555,
+    }))
+    child = _parse(chief_tools._handle_chief_spawn({
+        "name": "c", "brief": "child", "parent_chief_id": parent["chief_id"],
+        # NOTE: no operator_chat_id passed — should inherit
+    }))
+    assert child["operator_chat_id"] == 555
+
+
+def test_chief_answer_question_forwards_to_bridge(hermes_env, monkeypatch):
+    chief_tools, _ = hermes_env
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"ok": True, "req_id": "q1", "decision": "answered"}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    r = _parse(chief_tools._handle_chief_answer_question({
+        "req_id": "q1", "decision": "answered", "answer": "go ahead",
+    }))
+    assert r.get("ok") and r["delivered"] is True
+    assert captured["url"].endswith("/chief/answer")
+    assert captured["body"]["answer"] == "go ahead"
+
+
+def test_chief_answer_question_requires_answer_for_answered(hermes_env):
+    chief_tools, _ = hermes_env
+    r = _parse(chief_tools._handle_chief_answer_question({
+        "req_id": "q1", "decision": "answered",
+        # no 'answer' field
+    }))
+    assert r.get("error") and "answer" in r["error"]
+
+
+# ---------------------------------------------------------------------------
+# Followup script availability — chief_tools exposes the constants so
+# Hermes-main / docs can reference them. The cron itself is created by
+# the assistant on its own initiative (via `cronjob: create`), not by us.
+# ---------------------------------------------------------------------------
+
+def test_chief_supervisor_script_constants_are_exposed(hermes_env):
+    chief_tools, _ = hermes_env
+    assert chief_tools.CHIEF_SUPERVISOR_SCRIPT.endswith(".py")
+    assert chief_tools.CHIEF_SUPERVISOR_DEFAULT_SCHEDULE.startswith("every ")
