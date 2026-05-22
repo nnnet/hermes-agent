@@ -1,0 +1,23 @@
+toolsets.py
+  s_e5369d415d379b::t_7ca9e28ccc7141 91-98
+agent/prompt_builder.py
+  s_e5369d415d379b::t_4032f1087065c3 518-543
+  s_e5369d415d379b::t_72cd6da7933f03 488-517
+  s_e5369d415d379b::t_1d8f73f39518c4 544-561
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "954f54e22f6552e58fdd1d4ea1a0aa9bedcea7b3",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
