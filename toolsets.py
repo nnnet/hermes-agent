@@ -88,6 +88,14 @@ _HERMES_ASSISTANT_TOOLS = [
         "execute_code",
         "write_file",
         "patch",
+        # delegate_task is Hermes-implementation by proxy. Spawning a side
+        # subagent to mutate project artefacts has the same role-drift
+        # outcome as running execute_code directly — the assistant turns
+        # into a developer. Stripped 2026-05-23 after repeated incidents
+        # where Hermes-main reached for delegate_task to "fix" chief-side
+        # infrastructure issues (missing profile, stuck dispatch) instead
+        # of escalating via kanban_comment / kanban_block / tg_ask.
+        "delegate_task",
     }
 ]
 
