@@ -1,0 +1,38 @@
+agent/prompt_builder.py
+  s_e5369d415d379b::t_bb2ea2b2afd8f8 364,406,416,498
+  s_e5369d415d379b::t_cbbbf6781c7c45 320-328,330-332,334,337-338
+  s_e5369d415d379b::t_aa910c9c44879b 367-399
+tests/tools/test_mc_tools.py
+  s_e5369d415d379b::t_8bd870def1b4a9 696-745
+  s_e5369d415d379b::t_ca3663d1f95deb 746-804
+tools/mc_tools.py
+  s_e5369d415d379b::t_0efeefa4eaf8ef 902-957
+  s_e5369d415d379b::t_ae02ad1eeea59f 1265-1273
+  s_e5369d415d379b::t_acebdf7c35a5ce 958-1029
+  s_e5369d415d379b::t_021427b564a6bd 1274-1281
+agent/system_prompt.py
+  s_e5369d415d379b::t_dfcd1a817493d4 118-123
+skills/devops/chief-manager/SKILL.md
+  s_e5369d415d379b::t_a8e028a16c6200 105-106
+  s_e5369d415d379b::t_09af187d548e43 66
+  s_e5369d415d379b::t_16ae0f5bc642d3 117-118,122,126,132,143,146,163
+  s_e5369d415d379b::t_264c49ec4cb70d 9,87,98-99,104,110,155,167,184,188
+  s_e5369d415d379b::t_f5d61c327ea67d 12,14-23,28-29
+  s_e5369d415d379b::t_0d75feec1f8761 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "df2353fee5d090e56c2bee65cc3ab4208b40ec89",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
