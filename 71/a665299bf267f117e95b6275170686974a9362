@@ -1,0 +1,44 @@
+tools/workflow_tools.py
+  s_e5369d415d379b::t_2844f012942da8 23
+  s_e5369d415d379b::t_349612ae305f6a 1-22,24-248
+toolsets.py
+  s_e5369d415d379b::t_49c1e8d1510fb5 294-297
+tools/workflow_adapters/inline.py
+  s_e5369d415d379b::t_cf8644be3c8a6b 1-60,84-90,93,102-108,110-117,120-129,149-325,362-363
+  s_e5369d415d379b::t_667026e77bc904 326-361,364-365
+  s_e5369d415d379b::t_610d76416738b8 61-83,91-92,94-101,109,118-119,130-148
+tests/workflow_adapters/test_dsl.py
+  s_e5369d415d379b::t_950775f99dca51 109,116-118,121,126-129,132-134
+  s_e5369d415d379b::t_2b170b3ed4b67a 83-84
+  s_e5369d415d379b::t_96c1e0fc1755ff 1-82,85-103,107-108,110-115,119-120,122-125,130-131,135-180
+  s_e5369d415d379b::t_0aa6df4ad31041 104-106
+tools/workflow_adapters/__init__.py
+  s_e5369d415d379b::t_27908af285da75 1-28
+tools/workflow_adapters/dsl.py
+  s_e5369d415d379b::t_6ecd941456413e 1-252
+tools/workflow_adapters/base.py
+  s_e5369d415d379b::t_7bd579da8c0615 1-204
+tools/workflow_adapters/mc.py
+  s_e5369d415d379b::t_c4f08df8c7d3d2 1-177
+tests/workflow_adapters/test_contract.py
+  s_e5369d415d379b::t_ce2f3df1843d9c 194
+  s_e5369d415d379b::t_4eafb5dd7b3d7e 170-171
+  s_e5369d415d379b::t_846f69a4147f27 1-47,52-169,172-193,195-245
+  s_e5369d415d379b::t_efa6a51f8d2a3b 48-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "71a665299bf267f117e95b6275170686974a9362",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
