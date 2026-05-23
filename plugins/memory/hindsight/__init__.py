@@ -1341,17 +1341,68 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
+    @staticmethod
+    def _sanitize_for_retain(content: Any) -> str:
+        """Squash multimodal content parts down to a retain-friendly string.
+
+        Image + audio user-messages arrive here as OpenAI-style content
+        lists (see agent/image_routing.py:build_native_content_parts):
+
+            [{"type":"text","text":"подпись"},
+             {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR..."}}]
+
+        Stringifying that verbatim into Hindsight would push a multi-MB
+        base64 blob into the bank document — bloats Postgres, breaks
+        embedding quality, and recall returns junk neighbours. Replace
+        each non-text part with a one-line placeholder summarising what
+        it was (type + a short fingerprint), so the bank keeps "user
+        sent text + one image" semantics without the pixels.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out_parts: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    out_parts.append(str(part))
+                    continue
+                ptype = part.get("type", "")
+                if ptype == "text":
+                    out_parts.append(str(part.get("text", "")))
+                elif ptype == "image_url":
+                    url = part.get("image_url", {}).get("url", "") or ""
+                    if url.startswith("data:"):
+                        # data URL — drop base64, keep mime hint + size
+                        mime = url.split(";", 1)[0].removeprefix("data:") or "image"
+                        size_kb = max(1, len(url) // 1024)
+                        out_parts.append(f"[image: {mime}, ~{size_kb}KB inline]")
+                    else:
+                        out_parts.append(f"[image: {url[:120]}]")
+                elif ptype in ("audio", "input_audio"):
+                    out_parts.append("[audio attachment]")
+                else:
+                    out_parts.append(f"[{ptype or 'unknown'} part]")
+            return "\n".join(p for p in out_parts if p)
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        # Sanitize both sides — image_url parts in user msg get base64 stripped;
+        # assistant content is usually a string but defensively normalized.
+        user_text = self._sanitize_for_retain(user_content)
+        assistant_text = self._sanitize_for_retain(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {user_text}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {assistant_text}",
                 "timestamp": now,
             },
         ]
