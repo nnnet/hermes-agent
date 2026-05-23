@@ -125,8 +125,104 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         "chief_spawn" in agent.valid_tool_names
         or "mc_project_create" in agent.valid_tool_names
     )
-    if _can_delegate and "kanban_show" not in agent.valid_tool_names:
+    # Operator-role marker: delegation guidance is for the user-facing
+    # assistant (Гермес), NOT for chiefs/workers who happen to also have
+    # delegation tools. Distinguish by the absence of `terminal` — the
+    # assistant toolset is built with terminal/execute_code/write_file
+    # physically stripped (see _HERMES_ASSISTANT_TOOLS in toolsets.py).
+    # Previous condition checked `"kanban_show" not in tools` which never
+    # fired because Hermes-assistant DOES have kanban_show (for board
+    # inspection / chief monitoring) — silently disabling the entire
+    # delegation guidance + Google creds injection for the one profile
+    # that needs it most.
+    _is_operator_assistant = "terminal" not in agent.valid_tool_names
+    if _can_delegate and _is_operator_assistant:
         tool_guidance.append(ASSISTANT_DELEGATION_GUIDANCE)
+        # Inject the LIVE Google credentials state (read from disk every
+        # prompt build) so Hermes sees the truth without needing to call
+        # read_file. Without this, Hermes hallucinates "OAuth not
+        # configured" from training context even when the state file
+        # plainly says ready. The file is small (<1KB) and the prompt
+        # build path is hot enough that we can re-read on every turn.
+        try:
+            import json
+            from pathlib import Path
+            _state_path = Path("/opt/data/.google-creds-state.json")
+            if _state_path.exists():
+                _state = json.loads(_state_path.read_text())
+                if _state.get("status") == "ready":
+                    _scopes = _state.get("scopes") or []
+                    _msg = (
+                        "\n## GOOGLE CREDS — LIVE STATE (just-read)\n"
+                        f"`/opt/data/.google-creds-state.json` says **status=ready**.\n"
+                        f"  - token path: `{_state.get('path', '/opt/data/google_token.json')}`\n"
+                        f"  - {len(_scopes)} scope(s) including: "
+                        f"{', '.join(s.rsplit('/', 1)[-1] for s in _scopes[:5])}\n"
+                        f"  - client_id: `{_state.get('client_id', '?')}`\n"
+                        f"  - validated_at: {_state.get('validated_at', '?')}\n\n"
+                        "Therefore: Google Workspace is AVAILABLE this run. "
+                        "Do NOT tell the user OAuth is missing — that would be a lie "
+                        "the operator can verify in 5 seconds. Brief the chief: "
+                        "«Google Workspace доступен, scopes готовы» and spawn.\n"
+                    )
+                else:
+                    _reason = _state.get("reason", "unknown")
+                    _msg = (
+                        "\n## GOOGLE CREDS — LIVE STATE (just-read)\n"
+                        f"`/opt/data/.google-creds-state.json` says **status=missing** "
+                        f"(reason: {_reason}).\n"
+                        "Therefore: Google Workspace is NOT available this run. "
+                        "Tell the user one line («У нас нет Google-токена, выберем "
+                        "локальную альтернативу — SQLite + Flask») and spawn the "
+                        "chief WITHOUT Google. Don't ask the operator to do OAuth.\n"
+                    )
+                tool_guidance.append(_msg)
+        except Exception:
+            # State file unreadable / malformed — skip injection silently;
+            # the static section in ASSISTANT_DELEGATION_GUIDANCE still
+            # tells Hermes to read it himself.
+            pass
+        # Inject the list of available workflow templates (YAML in
+        # /opt/hermes-workflows/) so Hermes can name them in the chief
+        # brief. Without this Hermes has no way to recognise a project
+        # fits a pre-built pipeline shape — every brief would force the
+        # chief to hand-roll N kanban tasks even when workflow_run was
+        # the correct answer.
+        try:
+            from pathlib import Path
+            import re
+            _wf_dir = Path("/opt/hermes-workflows")
+            if _wf_dir.is_dir():
+                _entries = []
+                for _yaml in sorted(_wf_dir.glob("*.yaml")):
+                    _text = _yaml.read_text(encoding="utf-8")
+                    _name_m = re.search(r'^name:\s*(\S+)', _text, re.MULTILINE)
+                    _desc_m = re.search(
+                        r'^description:\s*>?\s*\n?(.+?)(?=\n\w|\n$)',
+                        _text, re.MULTILINE | re.DOTALL,
+                    )
+                    if _name_m:
+                        _name = _name_m.group(1)
+                        _desc = (
+                            " ".join(_desc_m.group(1).split())[:140]
+                            if _desc_m else ""
+                        )
+                        _entries.append(f"  - `{_name}` — {_desc}")
+                if _entries:
+                    _wf_msg = (
+                        "\n## WORKFLOW TEMPLATES — LIVE INVENTORY (just-read)\n"
+                        "Recurring/periodic projects should use these "
+                        "pre-built pipelines via `workflow_run(template=NAME)` "
+                        "INSTEAD of hand-rolled kanban_create chains. When "
+                        "your chief brief mentions a recurring shape "
+                        "(periodic scan, ingestion loop, scheduled report) "
+                        "explicitly point the Тимлид at the matching "
+                        "template by name. Available templates:\n"
+                        + "\n".join(_entries) + "\n"
+                    )
+                    tool_guidance.append(_wf_msg)
+        except Exception:
+            pass
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 

@@ -96,7 +96,24 @@ _HERMES_ASSISTANT_TOOLS = [
         # infrastructure issues (missing profile, stuck dispatch) instead
         # of escalating via kanban_comment / kanban_block / tg_ask.
         "delegate_task",
+        # chief_terminate stripped 2026-05-23 — Hermes-main called it
+        # 9 min into a chief's run because dispatcher hadn't yet picked
+        # up the just-created subtasks (correct behavior — dispatcher
+        # tick is every ~60s, so a chief that just decomposed will have
+        # todo tasks for a minute). Hermes mis-diagnosed as deadlock and
+        # killed the chief before workflow_run was even called. Chief
+        # termination is now operator-only: the user can stop a chief
+        # via TG/CLI when they want to.
+        "chief_terminate",
     }
+    # Browser tools are project-execution surface (rendering pages, OAuth
+    # consent screens, scraping). Hermes-assistant kept reaching for
+    # `browser_console` / `browser_navigate` as a pre-flight check on
+    # OAuth state INSTEAD of `chief_spawn`, burning multiple chat turns
+    # before any delegation happened. Physically removed 2026-05-23 so
+    # the temptation is gone — the team's worker profiles still keep
+    # browser_* in their toolsets.
+    and not t.startswith("browser_")
 ]
 
 
