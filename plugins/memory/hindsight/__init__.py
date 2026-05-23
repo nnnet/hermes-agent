@@ -1567,17 +1567,64 @@ class HindsightMemoryProvider(MemoryProvider):
         self._register_atexit()
         self._retain_queue.put(_do_retain)
 
-        # Dual-write to per-board bank — закрывает routing gap из
-        # hermes_cli/kanban_db.py:_maybe_init_github_mirror. Если worker
-        # сидит на конкретной board (env-var HERMES_KANBAN_BOARD выставлен
-        # dispatcher'ом при спавне), также retain'им тот же контент в
-        # bank `hermes-board-<slug>` с дополнительным тегом board:<slug>.
-        # Цели:
-        #   * наполнить board-bank observations'ами, чтобы
-        #     project-overview mental-model могла синтезироваться из
-        #     реальных данных (а не «—»);
-        #   * сохранить общую per-profile память (primary retain выше);
-        #   * не ронять основной поток при сбое второй записи.
+        # ── Dual-write to per-board bank ────────────────────────────────
+        #
+        # Закрывает routing gap из hermes_cli/kanban_db.py:
+        # _maybe_init_github_mirror — там создаётся `hermes-board-<slug>`
+        # bank + project-overview mental-model, но без dual-write она
+        # синтезируется из пустоты и выдаёт «—» в каждом разделе.
+        #
+        # ВЫБОР ПОДХОДА (оператор-решение 2026-05-23: вариант А).
+        # Рассматривали два пути закрыть gap:
+        #
+        #   (а) Dual-write — для worker'а на board писать в ДВА bank'а:
+        #       primary `hermes-<profile>` (общая кросс-проектная память
+        #       профиля) + secondary `hermes-board-<slug>` (project-
+        #       scoped). Это то, что реализовано здесь.
+        #
+        #   (б) Tag-based — оставить per-profile bank, но прицеплять
+        #       тег `board:<slug>` и делать cross-bank recall с фильтром
+        #       по тегу. Не выбрано: hindsight-client сегодня не умеет
+        #       cross-bank, нужна обёртка, плюс recall становится
+        #       двойным вызовом — больше латенси на каждый turn.
+        #
+        # ПОЧЕМУ ВЫБРАН ВАРИАНТ (а):
+        #   * сохраняет общую per-profile память (research-agent помнит
+        #     всё про все проекты, как раньше);
+        #   * board-bank наполняется observations'ами того же турна,
+        #     синхронно — project-overview model видит реальные данные
+        #     на следующем /consolidate;
+        #   * recall остаётся одним вызовом (плюс recall к board-bank
+        #     если worker привязан — но это уже стандартный recall, не
+        #     cross-bank);
+        #   * никакой связи с kanban-таблицами на код-уровне — чисто
+        #     env-var driven, изоляция модулей сохранена.
+        #
+        # ОВЕРХЕД:
+        #   * ~2× объём записи для worker'ов привязанных к board.
+        #     Hindsight Postgres лёгкий (наш bank на ~3K турнов весит
+        #     ~25 MiB), удвоение для активных workers'ов = единицы MiB
+        #     в сутки. Storage cost негligible.
+        #   * +1 background-thread call per turn — асинхронно через
+        #     ту же очередь, primary retain не блокируется.
+        #   * Потенциальная inconsistency: primary прошёл, secondary
+        #     упал. В этом случае primary остаётся источником истины,
+        #     board-bank догоняет на следующем турне. Project-overview
+        #     mental-model устойчива к таким лагам — она перегенерится
+        #     через /consolidate.
+        #
+        # ОТКАЗ-СЦЕНАРИЙ:
+        #   * board-bank не существует (например, новый chief-spawn ещё
+        #     не успел дойти до _maybe_init_github_mirror) → secondary
+        #     retain возвращает HTTPError 404 → log warning, продолжаем.
+        #     На следующем турне worker'а bank уже будет, retain пройдёт.
+        #
+        # SCOPE — KOГО ЗАТРАГИВАЕТ:
+        #   * main Hermes (operator chat) — HERMES_KANBAN_BOARD не
+        #     выставлен → single-write, как и раньше;
+        #   * chief-manager worker — HERMES_KANBAN_BOARD выставлен
+        #     dispatcher'ом → dual-write;
+        #   * research-agent / coder / qa worker на board → dual-write.
         board_bank = self._board_bank_for_dual_write()
         if board_bank and board_bank != bank_id:
             board_tags = list(lineage_tags) + [f"board:{board_bank.removeprefix('hermes-board-')}"]
