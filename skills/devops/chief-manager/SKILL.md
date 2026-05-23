@@ -69,15 +69,66 @@ Comment on your **initial task** with a digest — that's what `chief_status` (p
 kanban_comment(task_id="<initial>", body="Stage 2/4 complete: indexing done, 1245 transcripts retrieved. Now embedding.")
 ```
 
-### 4. Heartbeat
+### 4. Heartbeat — you STAY in `running` until the project is done
 
-The dispatcher monitors your `last_heartbeat_at` for crash detection. Call once every ~5 min during long work:
+The dispatcher monitors your `last_heartbeat_at` for crash detection. Your
+initial task stays `running` for the WHOLE lifetime of the project — do
+NOT mark it `done` after merely creating the sub-task list. The skill's
+acceptance gate at step 6 is: every sub-task `done` AND acceptance met.
+
+Until then, you live in a loop:
+
+```
+while not acceptance_met():
+    review_board()              # kanban_list, comment digests
+    handle_blocked_subtasks()   # unblock / re-scope / escalate
+    spawn_next_round()          # if work needs a follow-up cycle
+    kanban_heartbeat()
+    sleep(120)                  # ~2 min between ticks
+```
+
+Call `kanban_heartbeat()` once every ~2 min during long work:
 
 ```
 kanban_heartbeat()
 ```
 
-(Inside a tool loop it's automatic; explicit calls matter only when you're doing a long synchronous step that doesn't tick tools for minutes.)
+(Inside a tool loop it's automatic; explicit calls matter only when you're
+doing a long synchronous step that doesn't tick tools for minutes.)
+
+**Why this matters.** A one-shot chief (decompose → exit done) leaves
+nobody to handle blocked sub-tasks, dispatch the next round, or accept
+operator clarifications mid-project. The user invariably catches this
+within 2 turns: "where is the tim-lead, who's monitoring?". The
+heartbeat-loop pattern IS the persistent supervisor — there's no other
+persistent agent on the platform.
+
+### 4a. Spawn options — kanban_create OR workflow_run OR mc_task_create
+
+For each sub-task you create, choose the right dispatch tool based on
+the work's shape:
+
+- **`kanban_create(assignee=<profile>, ...)`** — single Hermes-profile
+  worker, one-shot deliverable. Default for ad-hoc decomposition.
+
+- **`workflow_run(template=<name>, inputs=...)`** — REPEATABLE graph
+  with multiple nodes (fetch → score → log every 30 min, document
+  ingestion pipeline, etc.). Call `workflow_list_templates()` FIRST to
+  see what's available; if a matching template exists, prefer it over
+  hand-rolling N kanban tasks. The adapter handles ordering, retries,
+  intermediate state between nodes, and parallelism.
+
+- **`mc_task_create(project_id=<id>, ...)`** — work that belongs in
+  Mission Control instead of the local kanban board: long-running
+  pipelines, cross-team work, work that needs MC's dashboard / cost
+  tracking / agent registry. Available when `mc_agents_list` returns
+  non-empty (gateway-side MC integration is configured).
+
+Mixed teams are fine: one chief can `kanban_create` a Hermes-profile
+sub-task AND `workflow_run` an MC pipeline AND `mc_task_create` a
+long-running MC unit — all in service of the same project. Treat each
+as one delegated unit from your perspective; poll status via
+`kanban_show` / `workflow_status` / `mc_task_get` respectively.
 
 ### 5. Handle blocked sub-tasks
 
