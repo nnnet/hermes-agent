@@ -73,55 +73,15 @@ _HERMES_CORE_TOOLS = [
 ]
 
 
-# Assistant-only subset: same as _HERMES_CORE_TOOLS but strips the four
-# implementation tools that pull Hermes-main into doing project work
-# himself (terminal, execute_code, write_file, patch, process). Read-only
-# inspection stays in, since the assistant still needs to look at things
-# to brief his team or report to the user. Use this for operator chats
-# where Hermes must delegate via chief_spawn / mc_project_create instead
-# of imple­menting in-chat.
-_HERMES_ASSISTANT_TOOLS = [
-    t for t in _HERMES_CORE_TOOLS
-    if t not in {
-        "terminal",
-        "process",
-        "execute_code",
-        "write_file",
-        "patch",
-        # delegate_task is Hermes-implementation by proxy. Spawning a side
-        # subagent to mutate project artefacts has the same role-drift
-        # outcome as running execute_code directly — the assistant turns
-        # into a developer. Stripped 2026-05-23 after repeated incidents
-        # where Hermes-main reached for delegate_task to "fix" chief-side
-        # infrastructure issues (missing profile, stuck dispatch) instead
-        # of escalating via kanban_comment / kanban_block / tg_ask.
-        "delegate_task",
-        # chief_terminate stripped 2026-05-23 — Hermes-main called it
-        # 9 min into a chief's run because dispatcher hadn't yet picked
-        # up the just-created subtasks (correct behavior — dispatcher
-        # tick is every ~60s, so a chief that just decomposed will have
-        # todo tasks for a minute). Hermes mis-diagnosed as deadlock and
-        # killed the chief before workflow_run was even called. Chief
-        # termination is now operator-only: the user can stop a chief
-        # via TG/CLI when they want to.
-        "chief_terminate",
-        # Web research tools — Hermes-assistant kept using web_search /
-        # web_extract as pre-flight "let me check the latest Polymarket
-        # API docs" before chief_spawn. Research is the chief/worker job;
-        # Hermes is operator. Stripped 2026-05-23.
-        "web_search",
-        "web_extract",
-        "web_fetch",
-    }
-    # Browser tools are project-execution surface (rendering pages, OAuth
-    # consent screens, scraping). Hermes-assistant kept reaching for
-    # `browser_console` / `browser_navigate` as a pre-flight check on
-    # OAuth state INSTEAD of `chief_spawn`, burning multiple chat turns
-    # before any delegation happened. Physically removed 2026-05-23 so
-    # the temptation is gone — the team's worker profiles still keep
-    # browser_* in their toolsets.
-    and not t.startswith("browser_")
-]
+# Assistant role uses the SAME tool set as core. The operator decides
+# whether a task is simple (Hermes does it himself with terminal /
+# write_file / web_search / browser_* / etc.) or complex (Hermes calls
+# chief_spawn to delegate to a team). That judgement lives in the
+# prompt, not in a hard-coded filter — an earlier filter that stripped
+# `terminal`, `web_*`, `browser_*` etc. broke simple-task execution
+# (e.g. "create a Google sheet" needs `terminal` to call the
+# google-workspace skill's $GAPI commands; the strip made it unreachable).
+_HERMES_ASSISTANT_TOOLS = _HERMES_CORE_TOOLS
 
 
 # Core toolset definitions

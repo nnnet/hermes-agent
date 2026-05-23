@@ -211,13 +211,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 if _entries:
                     _wf_msg = (
                         "\n## WORKFLOW TEMPLATES — LIVE INVENTORY (just-read)\n"
-                        "Recurring/periodic projects should use these "
-                        "pre-built pipelines via `workflow_run(template=NAME)` "
-                        "INSTEAD of hand-rolled kanban_create chains. When "
-                        "your chief brief mentions a recurring shape "
-                        "(periodic scan, ingestion loop, scheduled report) "
-                        "explicitly point the Тимлид at the matching "
-                        "template by name. Available templates:\n"
+                        "These are TEAM-SHAPE templates (composition + cycle), "
+                        "NOT domain-specific pipelines. Classify the user's "
+                        "wish into a team type (dev/research/creative/ops) and "
+                        "name the matching template in the chief brief — the "
+                        "team self-decomposes domain work inside the cycle. "
+                        "See the `Team-shape workflow templates` section above "
+                        "for the full decision flow. Available templates:\n"
                         + "\n".join(_entries) + "\n"
                     )
                     tool_guidance.append(_wf_msg)
