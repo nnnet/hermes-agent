@@ -33,7 +33,14 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir --break-system-packages yt-dlp
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
-RUN useradd -u 10000 -m -d /opt/data hermes
+# Native $HOME at /home/hermes so the container layout mirrors a host
+# install: $HOME/.hermes is the canonical config dir, mounted from
+# infra/hermes/.hermes/ in the repo. Backcompat symlink
+# /opt/data → /home/hermes/.hermes keeps older hardcoded paths working.
+RUN useradd -u 10000 -m hermes && \
+    mkdir -p /home/hermes/.hermes && \
+    chown -R hermes:hermes /home/hermes && \
+    ln -s /home/hermes/.hermes /opt/data
 
 COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
@@ -146,7 +153,12 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
-ENV HERMES_HOME=/opt/data
+# HERMES_HOME points at the canonical $HOME/.hermes location; the
+# backcompat symlink /opt/data → /home/hermes/.hermes (created in the
+# useradd RUN above) keeps any code that still hardcodes /opt/data
+# functional. PATH still uses the legacy /opt/data prefix because that's
+# what some user-pip installs are tagged with; the symlink resolves it.
+ENV HERMES_HOME=/home/hermes/.hermes
 ENV PATH="/opt/data/.local/bin:${PATH}"
-VOLUME [ "/opt/data" ]
+VOLUME [ "/home/hermes/.hermes" ]
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
