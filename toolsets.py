@@ -105,6 +105,13 @@ _HERMES_ASSISTANT_TOOLS = [
         # termination is now operator-only: the user can stop a chief
         # via TG/CLI when they want to.
         "chief_terminate",
+        # Web research tools — Hermes-assistant kept using web_search /
+        # web_extract as pre-flight "let me check the latest Polymarket
+        # API docs" before chief_spawn. Research is the chief/worker job;
+        # Hermes is operator. Stripped 2026-05-23.
+        "web_search",
+        "web_extract",
+        "web_fetch",
     }
     # Browser tools are project-execution surface (rendering pages, OAuth
     # consent screens, scraping). Hermes-assistant kept reaching for
