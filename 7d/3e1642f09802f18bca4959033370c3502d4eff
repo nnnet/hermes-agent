@@ -1,0 +1,20 @@
+tools/workflow_adapters/mc.py
+  s_e5369d415d379b::t_f817c5ed017823 131,133-137,143-152,154-161,164-166,175-176,181-182
+  s_e5369d415d379b::t_d13524b613496a 72-81,93-105,107-115,118,120,122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7d3e1642f09802f18bca4959033370c3502d4eff",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
