@@ -3388,6 +3388,39 @@ def _maybe_init_github_mirror(*, board: Optional[str]) -> None:
         )
 
     # Hindsight side — best-effort; never raises by contract.
+    #
+    # KNOWN GAP (2026-05-23):
+    # This creates the bank `hermes-board-<slug>` and a project-overview
+    # mental-model inside it — but worker profiles do NOT yet write
+    # observations INTO this bank. Current bank routing for retain is
+    # driven by `bank_id_template` in ~/.hermes/hindsight/config.json
+    # (set to `hermes-{profile}` today), which has no {board}
+    # placeholder. So today the workers write to `hermes-research-agent`,
+    # `hermes-coder` etc., while the project-overview model sits in
+    # `hermes-board-<slug>` and consolidates from observations that bank
+    # has — which is initially zero.
+    #
+    # Two ways to close the gap (operator decision pending):
+    #   (a) Add a {board} placeholder + resolver in
+    #       tools/hindsight_provider/_resolve_bank_id_template so workers
+    #       on a board write directly into the board-bank. Cleanest, but
+    #       requires per-profile bank_id_template overrides for non-board
+    #       cases. Cost: ~20-line resolver change + per-board bank
+    #       proliferation (one bank per chief).
+    #   (b) Keep per-profile banks, add an explicit `board:<slug>` retain
+    #       tag (already in the model's tags), then have recall pull
+    #       from BOTH per-profile bank AND the board-bank's overview
+    #       model via tag-filter. Cost: tag-driven cross-bank recall
+    #       isn't supported by hindsight-client today — would need a
+    #       wrapper that does two calls and merges.
+    #
+    # Until either is in place, the board-bank's project-overview model
+    # is a stub: cron consolidate will refresh it but the bank has no
+    # source observations, so the model's content will say "—" for
+    # every section. That's by design for the v1 hook — bank+model
+    # exist physically, ready for routing to be wired up. See
+    # infra/hermes/docs/hindsight-memory-guide.md §5 for the bank/
+    # mental-model architecture.
     try:
         from tools.hindsight_board_setup import init_board_hindsight
         init_board_hindsight(slug)

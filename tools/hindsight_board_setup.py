@@ -211,6 +211,27 @@ def init_board_hindsight(board_slug: str) -> bool:
 
     Process-cached on success so subsequent calls within the same
     dispatcher process short-circuit.
+
+    NOTE — incomplete routing (2026-05-23):
+        The bank + model are created here, but worker profiles do NOT
+        yet retain observations INTO this bank. ``bank_id_template`` in
+        the operator's hindsight config is ``hermes-{profile}`` and has
+        no ``{board}`` placeholder, so retains flow to per-profile banks
+        instead. Result: today the project-overview model is a stub
+        synthesised from an empty observation set.
+
+        Two routing options (operator pick required):
+          (a) Add ``{board}`` placeholder + resolver in
+              ``plugins/memory/hindsight._resolve_bank_id_template`` so
+              workers attached to a board write into the board-bank
+              directly.
+          (b) Keep per-profile banks; add a cross-bank recall wrapper
+              that pulls from per-profile bank AND the board-bank's
+              ``project-overview`` model by tag (``board:<slug>``).
+
+        See hermes_cli/kanban_db.py:_maybe_init_github_mirror docblock
+        and infra/hermes/docs/hindsight-memory-guide.md §5 for the
+        full split + routing rationale.
     """
     if not board_slug:
         return False
