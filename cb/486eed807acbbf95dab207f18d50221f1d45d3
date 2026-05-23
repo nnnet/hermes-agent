@@ -1,0 +1,21 @@
+tools/hindsight_board_setup.py
+  s_e5369d415d379b::t_1f7b3f05c61b5b 1-233
+hermes_cli/kanban_db.py
+  s_e5369d415d379b::t_8c4f65fdf33df6 3352-3353,3363-3372,3377-3390,3392-3393,3396,3399-3403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "cb486eed807acbbf95dab207f18d50221f1d45d3",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
