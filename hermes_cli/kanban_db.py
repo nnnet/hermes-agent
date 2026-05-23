@@ -3349,7 +3349,8 @@ _github_mirror_initialised: set[str] = set()
 
 
 def _maybe_init_github_mirror(*, board: Optional[str]) -> None:
-    """Per-process one-shot: init the board's ``workspaces/`` as a GitHub repo.
+    """Per-process one-shot: init the board's ``workspaces/`` as a GitHub repo
+    AND its matching Hindsight bank + project-overview mental-model.
 
     Why a module-level cache: a single dispatcher process resolves dozens of
     workspaces per board over its lifetime. Calling ``ensure_remote_repo``
@@ -3359,26 +3360,47 @@ def _maybe_init_github_mirror(*, board: Optional[str]) -> None:
 
     Failures don't poison the cache — next call retries (lets transient
     network errors heal on their own).
+
+    Hindsight side (added 2026-05-23): on the same code path we ALSO
+    create the per-board memory bank ``hermes-board-<slug>`` plus a
+    ``project-overview`` mental-model inside it. The two stores cover
+    different slices to avoid drift:
+      * git mirror  → WHAT was done (commits, files)
+      * hindsight   → WHY / goals / rejected alternatives / prohibitions
+                       (project-overview source_query enforces this split)
+    Hindsight failure is logged but does NOT block git/workspace setup —
+    project memory is best-effort, project artefacts are not.
     """
-    try:
-        from tools.github_app_workspace import init_workspace_repo, is_configured
-    except Exception:
-        return
-    if not is_configured():
-        return
     slug = _normalize_board_slug(board) or get_current_board()
     if slug in _github_mirror_initialised:
         return
-    repo_root = workspaces_root(board=slug)
+
+    git_ok = False
     try:
-        ok = init_workspace_repo(repo_root, slug)
+        from tools.github_app_workspace import init_workspace_repo, is_configured
+        if is_configured():
+            repo_root = workspaces_root(board=slug)
+            git_ok = init_workspace_repo(repo_root, slug)
     except Exception as exc:
         logging.getLogger(__name__).warning(
-            "_maybe_init_github_mirror: unexpected error for board %s: %s",
+            "_maybe_init_github_mirror: github init for board %s raised: %s",
             slug, exc,
         )
-        return
-    if ok:
+
+    # Hindsight side — best-effort; never raises by contract.
+    try:
+        from tools.hindsight_board_setup import init_board_hindsight
+        init_board_hindsight(slug)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "_maybe_init_github_mirror: hindsight init for board %s raised: %s",
+            slug, exc,
+        )
+
+    # Cache only if the git mirror succeeded — that's the heavyweight
+    # operation we want to avoid repeating. Hindsight init is cheap
+    # enough that re-trying on next call is fine.
+    if git_ok:
         _github_mirror_initialised.add(slug)
 
 
