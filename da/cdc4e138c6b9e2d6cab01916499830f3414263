@@ -1,0 +1,22 @@
+Dockerfile
+  s_e5369d415d379b::t_6226547354f84f 156-161,163
+  s_e5369d415d379b::t_7d08b5bda4f68e 36-43
+docker-compose.yml
+  s_e5369d415d379b::t_a30ec6431b9ac0 32,66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "dacdc4e138c6b9e2d6cab01916499830f3414263",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
