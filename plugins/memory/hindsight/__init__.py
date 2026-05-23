@@ -38,7 +38,7 @@ import queue
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -1407,6 +1407,32 @@ class HindsightMemoryProvider(MemoryProvider):
             },
         ]
 
+    def _board_bank_for_dual_write(self) -> Optional[str]:
+        """Return per-board bank id when worker is attached to a kanban board.
+
+        Reads ``HERMES_KANBAN_BOARD`` env var (set by the kanban
+        dispatcher when spawning a worker process for a board). Returns
+        ``hermes-board-<slug>`` if the var is set to a non-default
+        non-empty value, else ``None``.
+
+        Dispatcher convention: ``HERMES_KANBAN_BOARD`` is only injected
+        into worker subprocesses, not into the main gateway agent. So
+        the main Hermes (operator chat) never triggers dual-write, only
+        chief-spawned workers do — exactly the scope we want.
+        """
+        board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        if not board or board == "default":
+            return None
+        # Sanitize the slug the same way github_app_workspace does so
+        # the bank id matches what _maybe_init_github_mirror created.
+        sanitized = "".join(
+            c if (c.isalnum() or c == "-") else "-"
+            for c in board.lower()
+        ).strip("-")
+        if not sanitized:
+            return None
+        return f"hermes-board-{sanitized}"
+
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
             "retained_at": _utc_timestamp(),
@@ -1540,6 +1566,59 @@ class HindsightMemoryProvider(MemoryProvider):
         self._ensure_writer()
         self._register_atexit()
         self._retain_queue.put(_do_retain)
+
+        # Dual-write to per-board bank — закрывает routing gap из
+        # hermes_cli/kanban_db.py:_maybe_init_github_mirror. Если worker
+        # сидит на конкретной board (env-var HERMES_KANBAN_BOARD выставлен
+        # dispatcher'ом при спавне), также retain'им тот же контент в
+        # bank `hermes-board-<slug>` с дополнительным тегом board:<slug>.
+        # Цели:
+        #   * наполнить board-bank observations'ами, чтобы
+        #     project-overview mental-model могла синтезироваться из
+        #     реальных данных (а не «—»);
+        #   * сохранить общую per-profile память (primary retain выше);
+        #   * не ронять основной поток при сбое второй записи.
+        board_bank = self._board_bank_for_dual_write()
+        if board_bank and board_bank != bank_id:
+            board_tags = list(lineage_tags) + [f"board:{board_bank.removeprefix('hermes-board-')}"]
+            board_document_id = f"board-{document_id}" if document_id else None
+
+            def _do_retain_board() -> None:
+                item = self._build_retain_kwargs(
+                    content,
+                    context=retain_context,
+                    metadata=metadata_snapshot,
+                    tags=board_tags,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                logger.debug(
+                    "Hindsight dual-write retain: bank=%s, doc=%s, tags=%s",
+                    board_bank, board_document_id, board_tags,
+                )
+                try:
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=board_bank,
+                            items=[item],
+                            document_id=board_document_id,
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                    logger.debug("Hindsight dual-write retain succeeded")
+                except Exception as exc:
+                    # Best-effort: board-bank может не существовать (если
+                    # _maybe_init_github_mirror ещё не запускался для
+                    # этого slug'а). Логируем и идём дальше — primary
+                    # retain уже отправлен в очередь.
+                    logger.warning(
+                        "Hindsight dual-write retain failed for bank=%s: %s",
+                        board_bank, exc,
+                    )
+
+            self._retain_queue.put(_do_retain_board)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
