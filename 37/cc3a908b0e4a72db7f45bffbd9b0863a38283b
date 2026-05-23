@@ -1,0 +1,21 @@
+plugins/memory/hindsight/__init__.py
+  s_e5369d415d379b::t_71f120015879fb 1410-1435
+  s_e5369d415d379b::t_0ae1d916c2f218 1570-1622
+  s_e5369d415d379b::t_6bb2bcb6ae1a84 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "37cc3a908b0e4a72db7f45bffbd9b0863a38283b",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
