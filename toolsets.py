@@ -291,6 +291,10 @@ TOOLSETS = {
             "mc_pipeline_cancel",
             "mc_exec_approve", "mc_exec_approve_list",
             "mc_agents_list",
+            # Backend-agnostic workflow orchestration (wraps mc_pipeline_*,
+            # inline-runner via /api/v1/run-profile, future: langgraph etc.)
+            "workflow_run", "workflow_status", "workflow_cancel",
+            "workflow_list_templates",
             # MC task lifecycle (create/get/list/update/comment/retry)
             "mc_task_list", "mc_task_get", "mc_task_create",
             "mc_task_update", "mc_task_comment", "mc_task_retry",
