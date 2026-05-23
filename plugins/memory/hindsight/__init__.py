@@ -38,7 +38,7 @@ import queue
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -1341,20 +1341,97 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
+    @staticmethod
+    def _sanitize_for_retain(content: Any) -> str:
+        """Squash multimodal content parts down to a retain-friendly string.
+
+        Image + audio user-messages arrive here as OpenAI-style content
+        lists (see agent/image_routing.py:build_native_content_parts):
+
+            [{"type":"text","text":"подпись"},
+             {"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR..."}}]
+
+        Stringifying that verbatim into Hindsight would push a multi-MB
+        base64 blob into the bank document — bloats Postgres, breaks
+        embedding quality, and recall returns junk neighbours. Replace
+        each non-text part with a one-line placeholder summarising what
+        it was (type + a short fingerprint), so the bank keeps "user
+        sent text + one image" semantics without the pixels.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out_parts: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    out_parts.append(str(part))
+                    continue
+                ptype = part.get("type", "")
+                if ptype == "text":
+                    out_parts.append(str(part.get("text", "")))
+                elif ptype == "image_url":
+                    url = part.get("image_url", {}).get("url", "") or ""
+                    if url.startswith("data:"):
+                        # data URL — drop base64, keep mime hint + size
+                        mime = url.split(";", 1)[0].removeprefix("data:") or "image"
+                        size_kb = max(1, len(url) // 1024)
+                        out_parts.append(f"[image: {mime}, ~{size_kb}KB inline]")
+                    else:
+                        out_parts.append(f"[image: {url[:120]}]")
+                elif ptype in ("audio", "input_audio"):
+                    out_parts.append("[audio attachment]")
+                else:
+                    out_parts.append(f"[{ptype or 'unknown'} part]")
+            return "\n".join(p for p in out_parts if p)
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        # Sanitize both sides — image_url parts in user msg get base64 stripped;
+        # assistant content is usually a string but defensively normalized.
+        user_text = self._sanitize_for_retain(user_content)
+        assistant_text = self._sanitize_for_retain(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {user_text}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {assistant_text}",
                 "timestamp": now,
             },
         ]
+
+    def _board_bank_for_dual_write(self) -> Optional[str]:
+        """Return per-board bank id when worker is attached to a kanban board.
+
+        Reads ``HERMES_KANBAN_BOARD`` env var (set by the kanban
+        dispatcher when spawning a worker process for a board). Returns
+        ``hermes-board-<slug>`` if the var is set to a non-default
+        non-empty value, else ``None``.
+
+        Dispatcher convention: ``HERMES_KANBAN_BOARD`` is only injected
+        into worker subprocesses, not into the main gateway agent. So
+        the main Hermes (operator chat) never triggers dual-write, only
+        chief-spawned workers do — exactly the scope we want.
+        """
+        board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        if not board or board == "default":
+            return None
+        # Sanitize the slug the same way github_app_workspace does so
+        # the bank id matches what _maybe_init_github_mirror created.
+        sanitized = "".join(
+            c if (c.isalnum() or c == "-") else "-"
+            for c in board.lower()
+        ).strip("-")
+        if not sanitized:
+            return None
+        return f"hermes-board-{sanitized}"
 
     def _build_metadata(self, *, message_count: int, turn_index: int) -> Dict[str, str]:
         metadata: Dict[str, str] = {
@@ -1489,6 +1566,106 @@ class HindsightMemoryProvider(MemoryProvider):
         self._ensure_writer()
         self._register_atexit()
         self._retain_queue.put(_do_retain)
+
+        # ── Dual-write to per-board bank ────────────────────────────────
+        #
+        # Закрывает routing gap из hermes_cli/kanban_db.py:
+        # _maybe_init_github_mirror — там создаётся `hermes-board-<slug>`
+        # bank + project-overview mental-model, но без dual-write она
+        # синтезируется из пустоты и выдаёт «—» в каждом разделе.
+        #
+        # ВЫБОР ПОДХОДА (оператор-решение 2026-05-23: вариант А).
+        # Рассматривали два пути закрыть gap:
+        #
+        #   (а) Dual-write — для worker'а на board писать в ДВА bank'а:
+        #       primary `hermes-<profile>` (общая кросс-проектная память
+        #       профиля) + secondary `hermes-board-<slug>` (project-
+        #       scoped). Это то, что реализовано здесь.
+        #
+        #   (б) Tag-based — оставить per-profile bank, но прицеплять
+        #       тег `board:<slug>` и делать cross-bank recall с фильтром
+        #       по тегу. Не выбрано: hindsight-client сегодня не умеет
+        #       cross-bank, нужна обёртка, плюс recall становится
+        #       двойным вызовом — больше латенси на каждый turn.
+        #
+        # ПОЧЕМУ ВЫБРАН ВАРИАНТ (а):
+        #   * сохраняет общую per-profile память (research-agent помнит
+        #     всё про все проекты, как раньше);
+        #   * board-bank наполняется observations'ами того же турна,
+        #     синхронно — project-overview model видит реальные данные
+        #     на следующем /consolidate;
+        #   * recall остаётся одним вызовом (плюс recall к board-bank
+        #     если worker привязан — но это уже стандартный recall, не
+        #     cross-bank);
+        #   * никакой связи с kanban-таблицами на код-уровне — чисто
+        #     env-var driven, изоляция модулей сохранена.
+        #
+        # ОВЕРХЕД:
+        #   * ~2× объём записи для worker'ов привязанных к board.
+        #     Hindsight Postgres лёгкий (наш bank на ~3K турнов весит
+        #     ~25 MiB), удвоение для активных workers'ов = единицы MiB
+        #     в сутки. Storage cost негligible.
+        #   * +1 background-thread call per turn — асинхронно через
+        #     ту же очередь, primary retain не блокируется.
+        #   * Потенциальная inconsistency: primary прошёл, secondary
+        #     упал. В этом случае primary остаётся источником истины,
+        #     board-bank догоняет на следующем турне. Project-overview
+        #     mental-model устойчива к таким лагам — она перегенерится
+        #     через /consolidate.
+        #
+        # ОТКАЗ-СЦЕНАРИЙ:
+        #   * board-bank не существует (например, новый chief-spawn ещё
+        #     не успел дойти до _maybe_init_github_mirror) → secondary
+        #     retain возвращает HTTPError 404 → log warning, продолжаем.
+        #     На следующем турне worker'а bank уже будет, retain пройдёт.
+        #
+        # SCOPE — KOГО ЗАТРАГИВАЕТ:
+        #   * main Hermes (operator chat) — HERMES_KANBAN_BOARD не
+        #     выставлен → single-write, как и раньше;
+        #   * chief-manager worker — HERMES_KANBAN_BOARD выставлен
+        #     dispatcher'ом → dual-write;
+        #   * research-agent / coder / qa worker на board → dual-write.
+        board_bank = self._board_bank_for_dual_write()
+        if board_bank and board_bank != bank_id:
+            board_tags = list(lineage_tags) + [f"board:{board_bank.removeprefix('hermes-board-')}"]
+            board_document_id = f"board-{document_id}" if document_id else None
+
+            def _do_retain_board() -> None:
+                item = self._build_retain_kwargs(
+                    content,
+                    context=retain_context,
+                    metadata=metadata_snapshot,
+                    tags=board_tags,
+                )
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
+                if update_mode is not None:
+                    item["update_mode"] = update_mode
+                logger.debug(
+                    "Hindsight dual-write retain: bank=%s, doc=%s, tags=%s",
+                    board_bank, board_document_id, board_tags,
+                )
+                try:
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=board_bank,
+                            items=[item],
+                            document_id=board_document_id,
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                    logger.debug("Hindsight dual-write retain succeeded")
+                except Exception as exc:
+                    # Best-effort: board-bank может не существовать (если
+                    # _maybe_init_github_mirror ещё не запускался для
+                    # этого slug'а). Логируем и идём дальше — primary
+                    # retain уже отправлен в очередь.
+                    logger.warning(
+                        "Hindsight dual-write retain failed for bank=%s: %s",
+                        board_bank, exc,
+                    )
+
+            self._retain_queue.put(_do_retain_board)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":

@@ -70,7 +70,22 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # GitHub repo ops (gated on credentials available via check_fn — App
+    # installation OR GITHUB_TOKEN/GH_TOKEN). Encapsulates auth so the agent
+    # never hand-rolls JWT minting through execute_code.
+    "github_repo_list", "github_repo_view", "github_repo_delete", "github_repo_create",
 ]
+
+
+# Assistant role uses the SAME tool set as core. The operator decides
+# whether a task is simple (Hermes does it himself with terminal /
+# write_file / web_search / browser_* / etc.) or complex (Hermes calls
+# chief_spawn to delegate to a team). That judgement lives in the
+# prompt, not in a hard-coded filter — an earlier filter that stripped
+# `terminal`, `web_*`, `browser_*` etc. broke simple-task execution
+# (e.g. "create a Google sheet" needs `terminal` to call the
+# google-workspace skill's $GAPI commands; the strip made it unreachable).
+_HERMES_ASSISTANT_TOOLS = _HERMES_CORE_TOOLS
 
 
 # Core toolset definitions
@@ -243,17 +258,36 @@ TOOLSETS = {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "
             "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
-            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, block for human input, "
-            "heartbeat during long ops, comment on threads, and (for "
-            "orchestrators) list, unblock, and fan out tasks."
+            "set) OR the current profile/platform explicitly opts in. Lets "
+            "workers mark tasks done with structured handoffs, block for "
+            "human input, heartbeat during long ops, comment on threads, "
+            "and (for orchestrators / Chief / PM agents) list, unblock, fan "
+            "out tasks, spawn Chiefs, drive Mission Control pipelines, run "
+            "task lifecycle, and check spend. mc_*/chief_* tools share the "
+            "same kanban gating because they are PM-tier coordination."
         ),
         "tools": [
+            # Native kanban (workers + orchestrators)
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
+            # Chief sub-agent lifecycle (orchestrator-tier)
+            "chief_spawn", "chief_status", "chief_list", "chief_terminate",
+            # Mission Control pipelines + approvals + agent registry
+            "mc_pipeline_run", "mc_pipeline_list", "mc_pipeline_status",
+            "mc_pipeline_cancel",
+            "mc_exec_approve", "mc_exec_approve_list",
+            "mc_agents_list",
+            # Backend-agnostic workflow orchestration (wraps mc_pipeline_*,
+            # inline-runner via /api/v1/run-profile, future: langgraph etc.)
+            "workflow_run", "workflow_status", "workflow_cancel",
+            "workflow_list_templates",
+            # MC task lifecycle (create/get/list/update/comment/retry)
+            "mc_task_list", "mc_task_get", "mc_task_create",
+            "mc_task_update", "mc_task_comment", "mc_task_retry",
+            # Cost visibility
+            "mc_cost_summary",
         ],
         "includes": [],
     },
@@ -402,7 +436,45 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
+    "hermes-telegram-assistant": {
+        # Telegram assistant toolset — Hermes-main runs as a PERSONAL
+        # ASSISTANT here, not a developer. No terminal / execute_code /
+        # write_file / patch / process. Project work must go through
+        # `chief_spawn` / `mc_project_create` (kanban gives delegation
+        # tools) — the assistant cannot fall back to implementing it
+        # himself even if the LLM is tempted. Use this for Telegram
+        # operator chats by setting:
+        #   platform_toolsets.telegram:
+        #     - hermes-telegram-assistant
+        "description": (
+            "Telegram personal-assistant toolset — read + delegate, NO "
+            "implementation tools. Same kanban delegation surface as "
+            "hermes-telegram-pm but strips execute_code/terminal/write_file/"
+            "patch/process so role drift into developer mode is impossible "
+            "by construction."
+        ),
+        "tools": _HERMES_ASSISTANT_TOOLS,
+        "includes": ["kanban"],
+    },
+
+    "hermes-telegram-pm": {
+        # Telegram + PM coordination (kanban + Chief + Mission Control).
+        # Use this when the Telegram operator drives multi-agent work from
+        # the bot — set in config.yaml: platform_toolsets.telegram:
+        #   - hermes-telegram-pm
+        # The kanban toolset is gated by check_fn that allows it when the
+        # profile/platform opts in, so PM tools are visible only on this
+        # composite — not on the generic hermes-telegram.
+        "description": (
+            "Telegram PM toolset — hermes-telegram + kanban (Chief lifecycle, "
+            "Mission Control pipelines, MC task lifecycle, cost visibility). "
+            "Use this for an operator-driven coordination chat."
+        ),
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": ["kanban"],
+    },
+
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
         "tools": _HERMES_CORE_TOOLS + [

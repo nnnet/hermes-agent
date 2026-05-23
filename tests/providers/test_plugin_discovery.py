@@ -46,19 +46,28 @@ def test_bundled_plugins_discovered():
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_34_profiles_register():
-    """After discovery, the registry must contain exactly 34 distinct profiles."""
+def test_all_35_profiles_register():
+    """After discovery, the registry must contain exactly 35 distinct profiles.
+
+    Count history:
+    * 33 — upstream baseline after the plugin-discovery migration.
+    * 34 — bumped when ``claude-agent-sdk`` was added in Phase 1.3 of the
+      Meridian-replacement project (see docs/claude-agent-sdk-integration.md).
+    * 35 — bumped again after an upstream merge brought one additional
+      bundled provider into ``plugins/model-providers/``; total is
+      upstream-bundled + our ``claude-agent-sdk`` add.
+    """
     _clear_provider_caches()
     from providers import list_providers
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 34, f"Expected 34 profiles, got {len(names)}: {names}"
+    assert len(names) == 35, f"Expected 35 profiles, got {len(names)}: {names}"
 
     # Spot-check representative providers from different categories
     for required in (
-        "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "openrouter", "anthropic", "claude-agent-sdk", "custom", "bedrock",
+        "openai-codex", "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
     ):
         assert required in names, f"Missing profile: {required}"
 

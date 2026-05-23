@@ -1161,6 +1161,38 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self._fallback_to_main_for_compression(e, "failed")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+            # Special-case: the bundled Claude Code CLI (used via
+            # ``claude-agent-sdk`` host-CLI mode) sometimes emits
+            # ``is_error=True`` with the error text literally set to the
+            # word ``"success"``. The SDK wraps that into a ProcessError
+            # which surfaces here as ``Exception("... error result:
+            # success")``. Treat it as a "this turn's compression is
+            # unavailable" signal so the caller keeps the original
+            # messages intact rather than nuking them through the static
+            # fallback marker (which strips ~300 turns of context and
+            # leaves the bot silent on the very next user prompt).
+            # See _runtime-notes/auto-compact + agent.log from 2026-05-21.
+            _is_sdk_success_as_error = (
+                "error result: success" in _err_str
+                or "returned an error result: success" in _err_str
+            )
+            if _is_sdk_success_as_error:
+                self._sdk_success_as_error_seen = True
+                # Short cooldown — the underlying CLI may recover by next
+                # turn; we don't want to thrash retries either.
+                self._summary_failure_cooldown_until = time.monotonic() + 30
+                self._last_summary_error = (
+                    "claude-agent-sdk host-CLI returned 'success' as error — "
+                    "compression skipped, original context preserved"
+                )
+                logging.warning(
+                    "Context compression: claude-agent-sdk host-CLI "
+                    "returned success-as-error. Skipping compression this "
+                    "turn; messages will be preserved verbatim. "
+                    "Paused for 30s."
+                )
+                return None
+
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
@@ -1578,7 +1610,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
+        self._sdk_success_as_error_seen = False
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+        # Bailout: claude-agent-sdk host-CLI emitted success-as-error
+        # (upstream CLI bug). Keep the original messages — replacing 300
+        # turns of context with a "summary unavailable" stub leaves the
+        # bot silent on the next user prompt. The caller will see that
+        # compression "ran" but produced no shrinkage; the next compaction
+        # attempt happens after the 30-second cooldown set in
+        # _generate_summary, by which point the CLI may have recovered.
+        if getattr(self, "_sdk_success_as_error_seen", False) and summary is None:
+            self._last_summary_dropped_count = 0
+            self._last_summary_fallback_used = False
+            return list(messages)
 
         # Phase 4: Assemble compressed message list
         compressed = []

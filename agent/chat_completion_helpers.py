@@ -107,6 +107,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             elif agent.api_mode == "anthropic_messages":
                 result["response"] = agent._anthropic_messages_create(api_kwargs)
+            elif agent.api_mode == "claude_agent_sdk_single_turn":
+                # Single-turn SDK delegation.  Bridges async-iter
+                # ``query()`` → sync list-of-messages; the response
+                # validator + normalizer paths below treat the list
+                # uniformly (transport.normalize_response drains it).
+                result["response"] = agent._claude_agent_sdk_create(api_kwargs)
             elif agent.api_mode == "bedrock_converse":
                 # Bedrock uses boto3 directly — no OpenAI client needed.
                 # normalize_converse_response produces an OpenAI-compatible
@@ -254,6 +260,24 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+        )
+
+    # Claude Agent SDK (single-turn delegation) — spawns the host
+    # Claude Code CLI via the official ``claude-agent-sdk`` package.
+    # The transport pins ``max_turns=1`` and ``allowed_tools=[]`` so
+    # Hermes' own agent loop stays in charge of tool execution; the
+    # SDK is used only as the wire surface to one Claude call backed
+    # by host subscription auth.  Sentinel-keyed kwargs in the
+    # returned dict are consumed by ``_interruptible_api_call`` —
+    # see ``_claude_agent_sdk_create`` for the call site.
+    if agent.api_mode == "claude_agent_sdk_single_turn":
+        _cas_t = agent._get_transport()
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        return _cas_t.build_kwargs(
+            model=agent.model,
+            messages=anthropic_messages,
+            tools=tools_for_api,
+            base_url=getattr(agent, "_anthropic_base_url", None),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -1174,6 +1198,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             return agent._interruptible_api_call(api_kwargs)
         finally:
             agent._codex_on_first_delta = None
+
+    if agent.api_mode == "claude_agent_sdk_single_turn":
+        # The SDK's ``query()`` runs a Claude CLI subprocess that
+        # delivers complete ``Message`` objects, not token-level
+        # deltas in the shape the stream-delta callback expects.
+        # Single-turn invocations finish in one CLI roundtrip, so
+        # there is no real streaming win — delegate to the non-
+        # streaming path and fire ``on_first_delta`` once the
+        # response is in hand to clear the thinking spinner.
+        try:
+            response = agent._interruptible_api_call(api_kwargs)
+        finally:
+            if on_first_delta:
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+        return response
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.

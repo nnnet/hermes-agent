@@ -698,11 +698,19 @@ class _CodexCompletionsAdapter:
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":
                         effort = "low"
-                    resp_kwargs["reasoning"] = {
-                        "effort": effort,
-                        "summary": "auto",
-                    }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    # Env-var escape hatch (see agent/transports/codex.py
+                    # _reasoning_include_disabled): for non-reasoning OpenAI
+                    # models at api.openai.com, the Responses API rejects
+                    # include=["reasoning.encrypted_content"] with HTTP 400.
+                    _disable_include = (
+                        os.getenv("HERMES_DISABLE_REASONING_INCLUDE", "") or ""
+                    ).strip().lower() in {"1", "true", "yes", "on"}
+                    if not _disable_include:
+                        resp_kwargs["reasoning"] = {
+                            "effort": effort,
+                            "summary": "auto",
+                        }
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
@@ -1082,6 +1090,281 @@ class AsyncAnthropicAuxiliaryClient:
         self.base_url = sync_wrapper.base_url
         # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
         # eviction on a poisoned underlying client also drops this entry.
+        self._real_client = sync_wrapper._real_client
+
+
+# ---------------------------------------------------------------------------
+# Claude Agent SDK auxiliary client (api_mode='claude_agent_sdk_single_turn')
+# ---------------------------------------------------------------------------
+#
+# Why
+#   Hermes' auxiliary call path (compression, title_generation, session_search,
+#   skills_hub, approval, mcp, triage_specifier, curator, vision, web_extract)
+#   uniformly calls ``client.chat.completions.create(...)`` and reads
+#   ``response.choices[0].message.content``.  The ``claude-agent-sdk`` package
+#   speaks a *different* surface — async ``query()`` yielding SDK messages —
+#   so we wrap it in an OpenAI-compatible shim that mirrors the
+#   ``AnthropicAuxiliaryClient`` pattern.
+#
+# What
+#   ``_ClaudeAgentSdkCompletionsAdapter.create()``
+#     1. Accepts standard chat.completions kwargs (model, messages,
+#        max_tokens, temperature, tools…).
+#     2. Reuses the SDK transport's ``build_kwargs`` to convert messages →
+#        ``(prompt, ClaudeAgentOptions)`` with ``max_turns=1``,
+#        ``allowed_tools=[]`` (single-turn delegation — same strategy as
+#        the main agent loop).
+#     3. Lazily imports ``claude_agent_sdk`` and drains ``query()`` to a
+#        list with a fresh ``asyncio.run`` (one-shot event loop — same
+#        helper pattern as ``run_agent.py::_claude_agent_sdk_create``).
+#     4. Routes the drained list through the transport's
+#        ``normalize_response`` to get a uniform ``NormalizedResponse``.
+#     5. Wraps the result in a ``SimpleNamespace`` shaped like an OpenAI
+#        chat.completions response so callers don't need changes.
+#
+# Auth
+#   The SDK reads ``~/.claude/.credentials.json`` directly via the
+#   bundled Claude CLI subprocess — *no* ``ANTHROPIC_API_KEY`` env var,
+#   *no* base URL, *no* header.  The wrapper's ``api_key`` / ``base_url``
+#   attributes are placeholders to satisfy the OpenAI-client interface
+#   that ``_to_async_client`` and the client cache inspect.
+#
+# Vision
+#   The SDK's ``query()`` ``prompt`` parameter accepts only ``str`` (or a
+#   streaming ``AsyncIterable`` of ``UserMessage`` objects we don't use
+#   here).  OpenAI-style multimodal ``content`` blocks (``image_url``)
+#   are NOT supported on this path: the transport's prompt extractor
+#   collects only ``text`` blocks from the last user message; image
+#   blocks are silently dropped.  If a caller passes a vision payload,
+#   the SDK will be called with the text-only portion of the prompt.
+#   See ``test_vision_input_falls_back_to_text_only`` for the limitation.
+#
+#   TODO(claude-agent-sdk vision): when the SDK exposes a multimodal
+#   prompt path (e.g. an ``image`` content block in the streaming input
+#   contract), extend ``_ClaudeAgentSdkCompletionsAdapter.create`` to
+#   forward image blocks.  Until then, route vision through the native
+#   Anthropic path (``provider: anthropic``) for visual tasks.
+#
+# Test
+#   ``tests/agent/test_auxiliary_claude_agent_sdk.py`` mocks ``query()``
+#   to yield scripted SDK messages and asserts the wrapper returns the
+#   OpenAI-shape response auxiliary callers expect.
+
+# Sentinel keys the SDK transport's build_kwargs puts on its return dict.
+_CAS_DISPATCH_KEYS = (
+    "__claude_agent_sdk__",
+    "__anthropic_tools__",
+    "__anthropic_messages__",
+    "prompt",
+    "options",
+)
+
+
+class _ClaudeAgentSdkCompletionsAdapter:
+    """Adapter that runs a single-turn ``claude_agent_sdk.query()`` per call.
+
+    Why
+        Auxiliary callers expect ``client.chat.completions.create(**kw)`` to
+        return an OpenAI-shaped response.  The SDK exposes an async
+        iterator of typed ``Message`` objects instead.  This adapter
+        bridges the two surfaces without leaking SDK types upward.
+    What
+        Translates OpenAI chat.completions kwargs into an SDK ``query()``
+        call (via the existing ``ClaudeAgentSdkTransport``), drains the
+        async iterator, normalizes the messages, and returns a
+        ``SimpleNamespace`` whose ``choices[0].message.content`` is a
+        plain string built from every ``AssistantMessage`` text block in
+        the stream.
+    Test
+        ``test_auxiliary_claude_agent_sdk.py`` — mocks ``query()``
+        with scripted ``TextBlock`` / ``ResultMessage`` objects and asserts
+        the resulting ``.choices[0].message.content`` is the joined text,
+        and the ``ResultMessage.total_cost_usd`` is surfaced via
+        ``.usage.total_cost_usd``.
+    """
+
+    def __init__(self, model: str):
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        # Local imports so module import never touches the SDK.
+        from agent.transports import get_transport
+
+        messages = kwargs.get("messages", []) or []
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+
+        # Build SDK kwargs through the transport.  This raises a clear
+        # ImportError (with the hermes-agent[claude-agent-sdk] hint) when
+        # the SDK is not installed — auxiliary's own retry loop will
+        # surface it like any other provider error.
+        transport = get_transport("claude_agent_sdk_single_turn")
+        sdk_kwargs = transport.build_kwargs(
+            model=model,
+            messages=messages,
+            tools=tools,
+        )
+        prompt = sdk_kwargs.get("prompt", "") or ""
+        options = sdk_kwargs.get("options")
+
+        # Drain query() to a concrete list.  Mirrors
+        # ``run_agent.py::_claude_agent_sdk_create``: single-turn
+        # ``max_turns=1`` completes in one CLI subprocess invocation, so
+        # a one-shot event loop is the simplest correct bridge between
+        # the sync auxiliary call path and the async SDK surface.
+        import claude_agent_sdk  # noqa: F401 — proves SDK present + lets us read CLI* errors  # type: ignore[import-not-found]
+        import asyncio
+
+        _CLINotFoundError = getattr(claude_agent_sdk, "CLINotFoundError", None)
+        _CLIConnectionError = getattr(claude_agent_sdk, "CLIConnectionError", None)
+
+        async def _collect() -> list:
+            collected: list = []
+            async for msg in claude_agent_sdk.query(prompt=prompt, options=options):
+                collected.append(msg)
+            return collected
+
+        try:
+            sdk_messages = asyncio.run(_collect())
+        except Exception as exc:
+            # Map the SDK's CLI-level exceptions to operator-actionable
+            # RuntimeErrors so auxiliary logs point at the right fix
+            # instead of bubbling raw SDK internals.  Other SDK errors
+            # propagate unchanged so the retry/fallback chain can react.
+            if _CLINotFoundError is not None and isinstance(exc, _CLINotFoundError):
+                raise RuntimeError(
+                    "Claude Code CLI not found.  Ensure the "
+                    "'hermes-agent[claude-agent-sdk]' extra is installed; "
+                    "the package bundles the CLI binary.  On host installs, "
+                    "verify ~/.claude/.credentials.json exists and run "
+                    "`claude /login` on the host if not."
+                ) from exc
+            if _CLIConnectionError is not None and isinstance(exc, _CLIConnectionError):
+                raise RuntimeError(
+                    "Claude Code CLI failed to authenticate.  Check that "
+                    "~/.claude/.credentials.json exists on the host and is "
+                    "readable from inside the container (if dockerized).  "
+                    "If missing, run `claude /login` on the host."
+                ) from exc
+            raise
+
+        # Normalize the drained messages to a NormalizedResponse, then
+        # repackage as the OpenAI shape auxiliary callers expect.
+        nr = transport.normalize_response(sdk_messages)
+
+        assistant_message = SimpleNamespace(
+            content=nr.content,
+            tool_calls=nr.tool_calls,
+            reasoning=nr.reasoning,
+        )
+        choice = SimpleNamespace(
+            index=0,
+            message=assistant_message,
+            finish_reason=nr.finish_reason,
+        )
+
+        # Surface SDK cost telemetry on the .usage slot.  The SDK does
+        # not report token counts (the CLI accounts in dollars only), so
+        # prompt_tokens / completion_tokens stay None — callers that key
+        # on those for token-budget tracking will see "unknown" and skip
+        # accounting, which is the safer default than fabricating zeros.
+        usage = None
+        total_cost_usd = (nr.provider_data or {}).get("total_cost_usd")
+        if total_cost_usd is not None:
+            usage = SimpleNamespace(
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                total_cost_usd=total_cost_usd,
+            )
+
+        return SimpleNamespace(
+            choices=[choice],
+            model=model,
+            usage=usage,
+        )
+
+
+class _ClaudeAgentSdkChatShim:
+    def __init__(self, adapter: _ClaudeAgentSdkCompletionsAdapter):
+        self.completions = adapter
+
+
+class ClaudeAgentSdkAuxiliaryClient:
+    """OpenAI-client-compatible wrapper over ``claude_agent_sdk.query()``.
+
+    Why
+        Drop-in replacement for ``AnthropicAuxiliaryClient`` /
+        ``CodexAuxiliaryClient`` so every auxiliary use case
+        (compression, title_generation, session_search, skills_hub,
+        approval, mcp, triage_specifier, curator, vision, web_extract)
+        can route through the host's Claude subscription auth without
+        an ``ANTHROPIC_API_KEY``.
+    What
+        Holds the adapter, exposes ``.chat.completions.create()``,
+        and reports placeholder ``api_key`` / ``base_url`` for cache
+        bookkeeping (the SDK does not use either).
+    Test
+        ``test_auxiliary_claude_agent_sdk.py::test_compression_role`` — the
+        same wrapper handles compression, title_generation, and the
+        vision-fallback path; asserts ``.chat.completions.create()`` is
+        wired and returns OpenAI shape.
+    """
+
+    # Marker constants the OpenAI client cache can key on — the SDK
+    # itself has no concept of either, but the cache machinery in
+    # auxiliary_client always inspects them.
+    _SENTINEL_API_KEY = "claude-agent-sdk-host-auth"
+    _SENTINEL_BASE_URL = "claude-agent-sdk://host-cli"
+
+    def __init__(self, model: str):
+        adapter = _ClaudeAgentSdkCompletionsAdapter(model)
+        self.chat = _ClaudeAgentSdkChatShim(adapter)
+        self.api_key = self._SENTINEL_API_KEY
+        self.base_url = self._SENTINEL_BASE_URL
+        # Mirror the pattern used by AnthropicAuxiliaryClient — _real_client
+        # is consulted by the cache for poison eviction.  The SDK has no
+        # underlying real client to poison (every call spawns a fresh CLI
+        # subprocess via query()), so we point this back at self so any
+        # cache-eviction code path is a no-op rather than a NoneType crash.
+        self._real_client = self
+
+    def close(self) -> None:  # noqa: D401 — interface symmetry
+        # No persistent resources to release: every query() call is its
+        # own CLI subprocess invocation.  Provide a close() so callers
+        # that uniformly call .close() on aux clients don't AttributeError.
+        return None
+
+
+class _AsyncClaudeAgentSdkCompletionsAdapter:
+    def __init__(self, sync_adapter: _ClaudeAgentSdkCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncClaudeAgentSdkChatShim:
+    def __init__(self, adapter: _AsyncClaudeAgentSdkCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncClaudeAgentSdkAuxiliaryClient:
+    """Async-compatible wrapper matching ``AsyncOpenAI.chat.completions.create()``.
+
+    Mirrors the ``AsyncAnthropicAuxiliaryClient`` pattern — the sync
+    adapter is wrapped in an ``asyncio.to_thread`` shim so async
+    auxiliary consumers (web_tools, session_search) can ``await`` it.
+    """
+
+    def __init__(self, sync_wrapper: "ClaudeAgentSdkAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncClaudeAgentSdkCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncClaudeAgentSdkChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
         self._real_client = sync_wrapper._real_client
 
 
@@ -2862,6 +3145,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, ClaudeAgentSdkAuxiliaryClient):
+        # The SDK wrapper has no real HTTP client to async-wrap — just
+        # delegate to the async shim that runs the sync adapter on a
+        # worker thread.  See AsyncClaudeAgentSdkAuxiliaryClient.
+        return AsyncClaudeAgentSdkAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -3121,6 +3409,47 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Claude Agent SDK (host subscription auth via Claude CLI) ─────
+    # No API key, no base URL — the SDK reads ~/.claude/.credentials.json
+    # via the bundled Claude CLI subprocess.  Auxiliary callers get an
+    # OpenAI-compatible wrapper (ClaudeAgentSdkAuxiliaryClient) that
+    # translates chat.completions.create() into a single-turn query().
+    # Selected by ``provider: claude-agent-sdk`` in any
+    # ``auxiliary.<role>`` block; the same branch handles every aux role
+    # (compression, title_generation, session_search, skills_hub,
+    # approval, mcp, triage_specifier, curator, vision, web_extract).
+    if provider == "claude-agent-sdk":
+        # Verify the SDK is importable up front so misconfiguration
+        # surfaces here (with the install hint) rather than per-call.
+        try:
+            import claude_agent_sdk  # noqa: F401 — presence check  # type: ignore[import-not-found]
+        except ImportError:
+            logger.warning(
+                "resolve_provider_client: provider 'claude-agent-sdk' "
+                "requested but claude_agent_sdk is not installed.  "
+                "Install with: pip install 'hermes-agent[claude-agent-sdk]'"
+            )
+            return None, None
+
+        try:
+            from providers import get_provider_profile as _gpf_cas
+            _cas_profile = _gpf_cas("claude-agent-sdk")
+            default_model = (
+                getattr(_cas_profile, "default_aux_model", None)
+                or "claude-haiku-4-5"
+            )
+        except Exception:
+            default_model = "claude-haiku-4-5"
+
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        client = ClaudeAgentSdkAuxiliaryClient(final_model)
+        logger.debug(
+            "resolve_provider_client: claude-agent-sdk (%s) — host CLI auth",
+            final_model,
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
