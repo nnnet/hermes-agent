@@ -302,3 +302,86 @@ def grounding_score(
         grounded.append(1.0 if (covered / len(v_toks)) >= overlap_threshold else 0.0)
 
     return sum(grounded) / len(grounded) if grounded else 0.0
+
+
+# ─── P6: Universal cancellation / unfill / lock-validator ─────────────
+
+
+_CANCELLATION_PATTERNS = re.compile(
+    r"\b(забудь(те)?|сброс(ь|ить)?|reset|cancel|отмен(и|ите|яй)|"
+    r"начни\s+сначала|stop(\s+it)?|не\s+туда|это\s+не\s+то|"
+    r"перестань|"
+    r"забей|"
+    r"скинь\s+(всё|все|контекст))\b",
+    re.IGNORECASE,
+)
+
+
+def detect_cancellation(user_msg: str | None) -> bool:
+    """User asked the workflow to reset / start over / abandon.
+
+    Programmatic — does NOT call any LLM. Triggers an unconditional
+    state reset in runner.run() before extractor / decide_fn run.
+    """
+    if not user_msg:
+        return False
+    return bool(_CANCELLATION_PATTERNS.search(user_msg))
+
+
+# Matches "не Х, а Y" / "X — это не то / неправильно" / "не Х, лучше Y"
+_UNFILL_PATTERNS = re.compile(
+    r"\b(не\s+\S+,\s+а\s+|"
+    r"не\s+правильно|"
+    r"это\s+не\s+(то|так)|"
+    r"(а\s+)?(лучше|вернее)\s+|"
+    r"забудь\s+про\s+|"
+    r"перепиши)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_unfill_signal(user_msg: str | None) -> bool:
+    """User explicitly contradicted a prior slot fill.
+
+    Engine consumers can use this to bump the contradictions counter
+    and let the extractor re-read the most recent message with priority.
+    Doesn't pinpoint WHICH slot — extractor does that on the rewrite.
+    """
+    if not user_msg:
+        return False
+    return bool(_UNFILL_PATTERNS.search(user_msg))
+
+
+def validate_lock(
+    slots: Any,
+    schema: Any,
+    *,
+    require_high_confidence: bool = True,
+) -> tuple[bool, list[str]]:
+    """Check whether the workflow may legally enter the LOCK phase.
+
+    Returns (ok, reasons). When ``require_high_confidence`` (default
+    True), each required slot must have confidence above the schema's
+    ``threshold_high``. Without confidence (legacy SlotsBase) the check
+    is value-presence only.
+    """
+    reasons: list[str] = []
+    req = slots.required_keys() if hasattr(slots, "required_keys") else []
+    for key in req:
+        val = slots.get(key) if hasattr(slots, "get") else None
+        if not val:
+            reasons.append(f"required slot empty: {key}")
+            continue
+        if require_high_confidence and hasattr(slots, "get_confidence"):
+            conf = slots.get_confidence(key)
+            high = (
+                schema.confidence.threshold_high
+                if hasattr(schema, "confidence")
+                else 0.75
+            )
+            if conf < high:
+                reasons.append(
+                    f"required slot {key} below confidence threshold "
+                    f"({conf:.2f} < {high:.2f})"
+                )
+    return (len(reasons) == 0, reasons)

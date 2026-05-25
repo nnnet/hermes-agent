@@ -107,13 +107,29 @@ def build_decide_fn(
         filled = wstate.slots.filled_required()
         all_filled = (filled == len(wstate.slots.required_keys()))
 
+        # ── P6: validate_lock gate ────────────────────────────────────
+        # Before advancing into LOCK, ensure required slots actually
+        # meet the schema's confidence threshold. validate_lock returns
+        # (ok, reasons); when not ok we stay at ASK and surface the
+        # reasons in extras so the next turn's bot reply can target the
+        # weakest slot.
+        def _lock_ok() -> bool:
+            ok, reasons = detectors.validate_lock(wstate.slots, schema)
+            if not ok:
+                wstate.extras["lock_blocked_reasons"] = reasons
+            else:
+                wstate.extras.pop("lock_blocked_reasons", None)
+            return ok
+
         if user_pushed and filled >= 1:
-            return "LOCK"
+            if _lock_ok():
+                return "LOCK"
+            return "ASK"
 
         if all_filled and motivation_ok:
             if current_phase in ("ASK", "DECOMPOSE"):
                 return "REFLECT"
-            if current_phase == "REFLECT":
+            if current_phase == "REFLECT" and _lock_ok():
                 return "LOCK"
 
         return "ASK"

@@ -134,12 +134,35 @@ def run(
     state_path = _state_path(sdir, config.name, session)
     wstate = WorkflowState.load(state_path, config.slots_cls, config.name)
 
+    # ── P6: cancellation pre-check ──────────────────────────────────
+    # If the user explicitly asks the workflow to reset BEFORE anything
+    # else (extractor / decide_fn) runs, wipe state and start fresh on
+    # this same call. The cancellation message itself becomes turn 1 of
+    # the new session.
+    from . import detectors as _det
+    if _det.detect_cancellation(user_msg):
+        if state_path.exists():
+            state_path.unlink()
+        wstate = WorkflowState.load(state_path, config.slots_cls, config.name)
+        wstate.action_log.append(
+            "P6: cancellation detected → state reset"
+        )
+
     if prev_bot_msg:
         wstate.add_bot_msg(prev_bot_msg)
     if user_msg:
         wstate.add_user_msg(user_msg)
 
     wstate.iteration += 1
+
+    # ── P6: unfill signal ────────────────────────────────────────────
+    # User said "не X, а Y" or similar — flag a contradiction so the
+    # extractor's re-read on this turn gets priority over the prior
+    # state value (extractor's calibration rules already prefer recent
+    # messages, but the flag surfaces the user intent to humans).
+    if _det.detect_unfill_signal(user_msg):
+        wstate.extras["unfill_signaled"] = True
+        wstate.action_log.append("P6: unfill signal detected")
 
     # ── P2: LLM extractor ────────────────────────────────────────────
     # Before routing, ask a small fast LLM to (re)read the conversation
