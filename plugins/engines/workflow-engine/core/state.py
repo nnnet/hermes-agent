@@ -137,6 +137,10 @@ class WorkflowConfig:
     initial_phase: str
     decide_fn: Callable[..., str]
     mandatory_lock_phrase: str | None = None
+    # When the workflow uses a SchemaSlots subclass, this carries the
+    # loaded SkillSchema so the runner can drive the LLM extractor.
+    # None for legacy workflows that hand-write a SlotsBase subclass.
+    schema: Any = None
 
     def phase_names(self) -> list[str]:
         return [p.name for p in self.phases]

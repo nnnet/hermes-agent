@@ -71,6 +71,38 @@ def run(
 
     wstate.iteration += 1
 
+    # ── P2: LLM extractor ────────────────────────────────────────────
+    # Before routing, ask a small fast LLM to (re)read the conversation
+    # against the schema and fill / revise slots with per-slot
+    # confidence. Skipped silently when:
+    #   - workflow uses the legacy dataclass SlotsBase (no schema)
+    #   - WORKFLOW_EXTRACTOR_ENABLED=0
+    #   - extractor call fails (network, anthropic SDK missing, etc.)
+    # The legacy regex-based detector in decide_fn keeps running either
+    # way — extractor is additive, not a replacement.
+    try:
+        from .schema import SchemaSlots
+        if isinstance(wstate.slots, SchemaSlots) and getattr(config, "schema", None) is not None:
+            from .extractor import extract_slots as _extract, apply_results
+            results = _extract(
+                config.schema,
+                wstate.slots,
+                wstate.user_history,
+                wstate.bot_history,
+            )
+            if results:
+                changes = apply_results(
+                    wstate.slots, results, config.schema,
+                    log=wstate.action_log,
+                )
+                if changes == 0:
+                    wstate.action_log.append("extractor: no changes")
+            else:
+                wstate.action_log.append("extractor: skipped / no results")
+    except Exception as e:
+        # Never let extractor failure stop the engine — log and continue.
+        wstate.action_log.append(f"extractor: error ({type(e).__name__}: {e})")
+
     machine = WorkflowMachine(config, wstate)
     target_phase = machine.decide(user_msg, prev_bot_msg)
     wstate.phase = target_phase
