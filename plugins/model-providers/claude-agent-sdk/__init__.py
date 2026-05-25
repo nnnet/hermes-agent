@@ -26,16 +26,22 @@ logger = logging.getLogger(__name__)
 
 claude_agent_sdk = ProviderProfile(
     name="claude-agent-sdk",
+    display_name="Claude Agent SDK",
+    description="Claude via local CLI subscription (auth from ~/.claude/.credentials.json)",
     aliases=("claude-sdk", "agent-sdk"),
-    # api_mode value reserved for the upcoming transport adapter.
-    # Until the transport is implemented (Phase 2), selecting this
-    # provider will fail with "unknown api_mode" — by design, so
-    # users can't accidentally enable a half-built feature.
     api_mode="claude_agent_sdk_single_turn",
     env_vars=(),  # No env auth — SDK reads ~/.claude/.credentials.json
     base_url="",  # No base_url — CLI handles routing
     auth_type="none",  # Marker: auth is CLI-internal, no key/header needed
     default_aux_model="claude-haiku-4-5",
+    # Curated list — what the SDK can route through the host's Claude
+    # Code CLI. Same models the subscription exposes. Picker needs at
+    # least one entry to show the provider as selectable.
+    fallback_models=(
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ),
 )
 
 

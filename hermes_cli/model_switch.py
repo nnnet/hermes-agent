@@ -1429,6 +1429,21 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
+        # Special case: auth_type="none" — provider self-manages auth
+        # (e.g. claude-agent-sdk reads ~/.claude/.credentials.json via the
+        # local CLI; no env var, no auth.json entry). Without this branch
+        # the picker hides the provider even when the host CLI is signed
+        # in. We trust the profile to fail loudly at call time if the
+        # underlying mechanism is not actually available.
+        if not _cp_has_creds:
+            try:
+                from providers import get_provider_profile as _gpp_pick
+                _pp_pick = _gpp_pick(_cp.slug)
+                if _pp_pick and getattr(_pp_pick, "auth_type", "") == "none":
+                    _cp_has_creds = True
+            except Exception:
+                pass
+
         if not _cp_has_creds:
             continue
 
