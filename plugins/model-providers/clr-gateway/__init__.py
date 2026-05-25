@@ -46,6 +46,14 @@ clr_gateway = ProviderProfile(
     base_url="https://llm.ketlu.com",
     auth_type="api_key",
     default_aux_model="claude-haiku-4-5",
+    # Curated list — shown in /model picker. The gateway's /v1/models
+    # endpoint may not be implemented or may return more than agentic-capable
+    # models, so we keep the safe set explicit. Verified working 2026-05-22.
+    fallback_models=(
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ),
 )
 
 
