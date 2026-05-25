@@ -143,15 +143,13 @@ def _engine_session_active(session_id: str) -> bool:
     clarification is in flight we must drive it to LOCK/DONE, not
     bail back to the bot's training defaults.
     """
-    # Resolve state directory the same way runner.py does.
+    # Resolve state dir the same way runner.py does — Path.home()/.hermes
+    # is mapped to the project-local ``infra/hermes/.hermes/`` by compose.
+    # Do NOT default to /opt/data — that's a separate Docker named
+    # volume, not the project mount where the engine actually writes.
     state_dir = Path(
-        os.environ.get(
-            "WORKFLOW_STATE_DIR",
-            os.path.join(
-                os.environ.get("HERMES_HOME", "/opt/data"),
-                "workflow_state",
-            ),
-        )
+        os.environ.get("WORKFLOW_STATE_DIR")
+        or (Path.home() / ".hermes" / "workflow_state")
     )
     state_path = state_dir / "desire-to-goal" / f"{session_id}.json"
     if not state_path.exists():
