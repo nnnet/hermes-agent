@@ -1,0 +1,21 @@
+plugins/desire-to-goal-driver/__init__.py
+  s_e5369d415d379b::t_5acb50bfce173b 1-204
+plugins/desire-to-goal-driver/plugin.yaml
+  s_e5369d415d379b::t_132d518a8a90b5 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "b8f7862fa5d51105ccbc63bc3bc786f509a80820",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
