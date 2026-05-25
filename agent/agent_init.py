@@ -649,7 +649,28 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Read anthropic-version override from config — supports both
+            # the top-level model: block and the per-provider providers.X:
+            # block. Native Anthropic provider keeps the SDK default; only
+            # custom endpoints typically need to pin a specific version.
+            _anth_version = None
+            try:
+                from hermes_cli.config import load_config as _load_anth_cfg
+                _cfg = _load_anth_cfg() or {}
+                _model_blk = _cfg.get("model") or {}
+                if isinstance(_model_blk, dict):
+                    _anth_version = (_model_blk.get("anthropic_version") or "").strip() or None
+                if not _anth_version:
+                    _prov_blk = (_cfg.get("providers") or {}).get(agent.provider) or {}
+                    if isinstance(_prov_blk, dict):
+                        _anth_version = (_prov_blk.get("anthropic_version") or "").strip() or None
+            except Exception:
+                _anth_version = None
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, base_url,
+                timeout=_provider_timeout,
+                anthropic_version=_anth_version,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
