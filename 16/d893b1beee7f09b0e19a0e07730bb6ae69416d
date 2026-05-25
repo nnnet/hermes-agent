@@ -1,0 +1,9 @@
+uv.lock
+  ai_agent 784-800,1664-1666,1815,1901
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "16d893b1beee7f09b0e19a0e07730bb6ae69416d",
+  "prompts": {}
+}
