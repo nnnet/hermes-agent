@@ -35,6 +35,15 @@ RUN apt-get update && \
 # so the wrapper can `pip install --user --upgrade yt-dlp` without root.
 RUN pip install --no-cache-dir --break-system-packages yt-dlp
 
+# Claude Code CLI — required by the ``claude-agent-sdk`` Python package
+# (plugins/model-providers/claude-agent-sdk). Every query() call shells
+# out to the local ``claude`` binary for inference; without it the SDK
+# hangs and the call times out at 90s. Auth comes from
+# ``~/.claude/.credentials.json`` which compose mounts into
+# /home/hermes/.claude.
+RUN npm install -g @anthropic-ai/claude-code && \
+    claude --version || true
+
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.

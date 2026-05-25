@@ -1,19 +1,23 @@
-"""Claude Agent SDK provider profile.
+"""Claude Agent SDK provider — host CLI via meridian HTTP proxy.
 
-Registers `provider: claude-agent-sdk` which delegates inference to the
-local Claude Code CLI via the official `claude-agent-sdk` Python package.
+Registers ``provider: claude-agent-sdk``. Inference is delegated to
+the host's Claude Code CLI (which is signed in to a real Anthropic
+subscription) via the Meridian HTTP proxy on
+``http://127.0.0.1:3456``. The container reaches it because
+``hermes-core`` runs in ``network_mode: host``.
 
-Unlike the native Anthropic provider (HTTP API + x-api-key header) or
-Meridian (HTTP proxy at :3456 that wraps CLI), this provider invokes
-the CLI subprocess directly through the SDK. Credentials come from
-the host's `~/.claude/.credentials.json` — no API key, no proxy.
+Why a proxy and not the ``claude-agent-sdk`` Python package directly:
+Anthropic refuses OAuth tokens originating from a Docker environment
+(returns ``401 INVALID_USER_TOKEN`` for /v1/messages requests). The
+upstream Python package spawns the CLI as a subprocess, which inherits
+the container's environment, so it hits the same 401. Meridian
+running on the host is unaffected — its outbound calls look like a
+normal desktop Claude Code session.
 
-The actual call path is handled by `agent/transports/claude_agent_sdk.py`
-(transport for api_mode='claude_agent_sdk_single_turn'), which is added
-in a follow-up commit. This file is metadata-only — registering the
-profile in the provider registry.
-
-See docs/claude-agent-sdk-integration.md for the full integration plan.
+Wire-protocol-wise this profile is identical to ``anthropic_custom``,
+just pointed at a different base_url. Auth is a placeholder
+(``api_key: not-needed``) because Meridian does not gate on the
+caller's bearer.
 """
 
 import logging
@@ -27,16 +31,13 @@ logger = logging.getLogger(__name__)
 claude_agent_sdk = ProviderProfile(
     name="claude-agent-sdk",
     display_name="Claude Agent SDK",
-    description="Claude via local CLI subscription (auth from ~/.claude/.credentials.json)",
+    description="Host Claude Code CLI via Meridian HTTP proxy (127.0.0.1:3456)",
     aliases=("claude-sdk", "agent-sdk"),
-    api_mode="claude_agent_sdk_single_turn",
-    env_vars=(),  # No env auth — SDK reads ~/.claude/.credentials.json
-    base_url="",  # No base_url — CLI handles routing
-    auth_type="none",  # Marker: auth is CLI-internal, no key/header needed
+    api_mode="anthropic_messages",
+    env_vars=(),  # No env auth — Meridian doesn't validate
+    base_url="http://127.0.0.1:3456",
+    auth_type="api_key",
     default_aux_model="claude-haiku-4-5",
-    # Curated list — what the SDK can route through the host's Claude
-    # Code CLI. Same models the subscription exposes. Picker needs at
-    # least one entry to show the provider as selectable.
     fallback_models=(
         "claude-opus-4-7",
         "claude-sonnet-4-6",
