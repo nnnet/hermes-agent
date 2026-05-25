@@ -1,0 +1,5 @@
+name: clr-gateway-provider
+kind: model-provider
+version: 1.0.0
+description: CLR Gateway — third-party Anthropic-compatible proxy at llm.ketlu.com
+author: nnnet/AiManager
