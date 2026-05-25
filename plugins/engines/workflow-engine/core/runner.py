@@ -247,6 +247,21 @@ def run(
     )
     wstate.save(state_path)
 
+    # ── P7: per-turn snapshot for audit trail ────────────────────────
+    # Mirror the just-saved <session>.json into
+    # <history>/<session>/v{NNNN}.json so we can replay slot evolution,
+    # confidence deltas, and contradictions arrival across turns.
+    try:
+        from .history import write_snapshot
+        import json as _json
+        snapshot_dict = _json.loads(state_path.read_text(encoding="utf-8"))
+        write_snapshot(
+            sdir, config.name, session,
+            wstate.iteration, snapshot_dict,
+        )
+    except Exception as e:
+        wstate.action_log.append(f"history: snapshot failed ({type(e).__name__}: {e})")
+
     # ── P5: final artifact ───────────────────────────────────────────
     # When the workflow reaches its terminal phase (typically DONE),
     # emit a YAML artifact next to the state file. The artifact is what
