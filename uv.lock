@@ -1793,6 +1793,9 @@ web = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+workflow-engine = [
+    { name = "transitions" },
+]
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -1892,13 +1895,14 @@ requires-dist = [
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "tenacity", specifier = "==9.1.4" },
+    { name = "transitions", marker = "extra == 'workflow-engine'", specifier = "==0.9.3" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "claude-agent-sdk", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "claude-agent-sdk", "workflow-engine", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -4186,6 +4190,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
+]
+
+[[package]]
+name = "transitions"
+version = "0.9.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/83/9e90f3494057d73c9e6bd8de8488af7c9fa714666ccc2db30fe07d147818/transitions-0.9.3.tar.gz", hash = "sha256:881fb75bb1654ed55d86060bb067f2c716f8e155f57bb73fd444e53713aafec8", size = 1191029, upload-time = "2025-07-02T10:49:03.153Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/05/fea3020e90aa378941ff10de8860fb3b1288313c27efd10fa0c476498f7e/transitions-0.9.3-py2.py3-none-any.whl", hash = "sha256:02463248f2b668d86f66636b1e3c9e8de84d93e22915247f4e1aa9ee1cae28aa", size = 112792, upload-time = "2025-07-02T10:49:01.415Z" },
 ]
 
 [[package]]

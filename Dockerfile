@@ -176,7 +176,7 @@ RUN touch ./README.md
 # fails and the bank stays empty. Baking the dep in makes both modes work
 # out-of-the-box and removes the per-container-restart lazy-install churn.
 # `--extra messaging` (upstream 2026-05-17) preloads messaging gateway deps.
-RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk --extra hindsight --extra messaging
+RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk --extra workflow-engine --extra hindsight --extra messaging
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

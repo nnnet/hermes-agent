@@ -229,7 +229,32 @@ class WorkflowState:
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.updated_ts = time.time()
-        data = asdict(self)
+        # asdict() recurses into dataclass instances, but SchemaSlots is a
+        # dict-driven non-dataclass so it'd survive as a raw object and
+        # then break json.dumps. Build the dict manually with an explicit
+        # slots-serialization hop. Legacy dataclass SlotsBase subclasses
+        # still work via the .as_dict() fallback.
+        slots_data: dict[str, Any] = {}
+        if self.slots is not None:
+            if hasattr(self.slots, "serialize"):
+                slots_data = self.slots.serialize()
+            elif hasattr(self.slots, "as_dict"):
+                slots_data = self.slots.as_dict()
+        data = {
+            "session_id": self.session_id,
+            "workflow_name": self.workflow_name,
+            "version": self.version,
+            "created_ts": self.created_ts,
+            "updated_ts": self.updated_ts,
+            "iteration": self.iteration,
+            "phase": self.phase,
+            "slots": slots_data,
+            "user_history": list(self.user_history),
+            "bot_history": list(self.bot_history),
+            "contradictions": list(self.contradictions),
+            "action_log": list(self.action_log),
+            "extras": dict(self.extras),
+        }
         path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
