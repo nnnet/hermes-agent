@@ -47,6 +47,7 @@ import logging
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -133,20 +134,60 @@ def _build_engine_block(payload: dict[str, Any]) -> str:
     return block
 
 
+def _engine_session_active(session_id: str) -> bool:
+    """True iff a workflow state file exists for this session and the
+    workflow hasn't reached the terminal phase yet.
+
+    Used to keep invoking the engine on follow-up turns even when the
+    user's message no longer matches the vague-desire regex — once a
+    clarification is in flight we must drive it to LOCK/DONE, not
+    bail back to the bot's training defaults.
+    """
+    # Resolve state directory the same way runner.py does.
+    state_dir = Path(
+        os.environ.get(
+            "WORKFLOW_STATE_DIR",
+            os.path.join(
+                os.environ.get("HERMES_HOME", "/opt/data"),
+                "workflow_state",
+            ),
+        )
+    )
+    state_path = state_dir / "desire-to-goal" / f"{session_id}.json"
+    if not state_path.exists():
+        return False
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return raw.get("phase") not in {"DONE", None}
+
+
 def _on_pre_llm_call(**kwargs: Any) -> Optional[dict[str, str]]:
     """pre_llm_call hook entry point.
 
     Returns ``{"context": "<engine block>"}`` so the conversation loop
     appends the block to the current turn's user message. Returns
     ``None`` on no-match or engine failure (degrades cleanly).
+
+    Trigger conditions (ANY of):
+      1. user_message matches the vague-desire regex (cold start of a
+         clarification workflow), OR
+      2. a workflow state file exists for this session and the
+         workflow hasn't reached its terminal phase (continuation of
+         an in-flight clarification — the upstream F1 gate's sticky
+         flag handles this on its side but the engine call needs its
+         own trigger because the regex is for INTAKE, not continuation).
     """
     user_msg = str(kwargs.get("user_message") or "").strip()
     if not user_msg:
         return None
-    if not _VAGUE_DESIRE_RE.search(user_msg):
-        return None
-
     session_id = str(kwargs.get("session_id") or "default")
+
+    regex_match = bool(_VAGUE_DESIRE_RE.search(user_msg))
+    session_active = _engine_session_active(session_id)
+    if not (regex_match or session_active):
+        return None
 
     argv = [
         PYTHON_BIN, ENGINE_CLI,
