@@ -1370,6 +1370,19 @@ def list_authenticated_providers(
             # Merge with models.dev for preferred providers (same rationale as above).
             if hermes_slug in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+            # Plugin-injected overlays (model-providers/<name>/) don't have
+            # an entry in _PROVIDER_MODELS; fall through to provider_model_ids
+            # so ProviderProfile.fallback_models surfaces here too.
+            if not model_ids:
+                try:
+                    from hermes_cli.providers import _PLUGIN_INJECTED_OVERLAYS as _plug_set
+                except Exception:
+                    _plug_set = set()
+                if hermes_slug in _plug_set or pid in _plug_set:
+                    try:
+                        model_ids = provider_model_ids(hermes_slug) or []
+                    except Exception:
+                        model_ids = []
         total = len(model_ids)
         top = model_ids[:max_models]
 

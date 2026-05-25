@@ -240,6 +240,8 @@ def _api_mode_to_transport(api_mode: str) -> str:
     return api_mode
 
 
+_PLUGIN_INJECTED_OVERLAYS: set = set()
+
 try:
     from providers import list_providers as _list_providers_for_overlays
     for _pp in _list_providers_for_overlays():
@@ -260,6 +262,7 @@ try:
             base_url_override=_pp.base_url or "",
             base_url_env_var=_bu_env,
         )
+        _PLUGIN_INJECTED_OVERLAYS.add(_pp.name)
 except Exception:
     pass
 
@@ -433,6 +436,18 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
+
+# Carry plugin display_names into _LABEL_OVERRIDES so the picker
+# shows the friendly label (e.g. "Anthropic-custom", "Claude Agent
+# SDK") instead of the bare slug. Falls back silently when the plugin
+# registry isn't ready yet.
+try:
+    from providers import list_providers as _list_providers_for_labels
+    for _pp_lbl in _list_providers_for_labels():
+        if _pp_lbl.display_name and _pp_lbl.name not in _LABEL_OVERRIDES:
+            _LABEL_OVERRIDES[_pp_lbl.name] = _pp_lbl.display_name
+except Exception:
+    pass
 
 
 # -- Transport → API mode mapping ---------------------------------------------
