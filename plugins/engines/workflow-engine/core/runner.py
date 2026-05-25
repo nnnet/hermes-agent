@@ -324,6 +324,35 @@ def run(
     return result
 
 
+async def run_async(
+    config: WorkflowConfig,
+    session: str,
+    user_msg: str,
+    prev_bot_msg: str | None = None,
+    state_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Async wrapper around ``run()`` for callers that want to overlap
+    engine work with a separate main-bot reply draft.
+
+    The bulk of run()'s wall-clock time is the extractor's HTTP call to
+    the Anthropic-compatible endpoint (haiku via Meridian, ~1-2s per
+    turn). Wrapping in ``asyncio.to_thread`` lets a Hermes-side caller
+    ``await asyncio.gather(engine_run_async(...), bot_draft(...))`` so
+    the two LLM calls overlap. End-to-end latency drops from
+    extractor_t + draft_t (sequential) to max(extractor_t, draft_t)
+    (parallel).
+
+    Note: extractor itself uses the synchronous anthropic SDK client.
+    True non-blocking I/O inside the engine would require switching to
+    AsyncAnthropic — left as a follow-up since to_thread already
+    delivers concurrency at the caller boundary.
+    """
+    import asyncio
+    return await asyncio.to_thread(
+        run, config, session, user_msg, prev_bot_msg, state_dir,
+    )
+
+
 def run_status(
     config: WorkflowConfig,
     session: str,
