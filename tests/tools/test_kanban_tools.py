@@ -61,6 +61,32 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_path):
+    """Dispatcher-spawned workers must get lifecycle tools even when the
+    assignee profile restricts enabled toolsets and does not list kanban.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    schema = get_tool_definitions(
+        enabled_toolsets=["terminal"],
+        quiet_mode=True,
+    )
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_show" in names
+    assert "kanban_complete" in names
+    assert "kanban_block" in names
+    assert "kanban_list" not in names
+
+
 def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
     """Task scope wins over profile config for board-routing tools.
 
@@ -128,6 +154,7 @@ def worker_env(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
@@ -310,12 +337,151 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["runs"][-1]["metadata"] == handoff
 
 
+def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+    metadata = {"files": 2, "worker_session_id": "user-spoof"}
+
+    out = kt._handle_complete({
+        "summary": "done by scoped worker",
+        "metadata": metadata,
+    })
+    assert json.loads(out)["ok"] is True
+    assert metadata["worker_session_id"] == "user-spoof"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "session-trusted",
+        }
+    finally:
+        conn.close()
+
+
+def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
+    monkeypatch, worker_env
+):
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+
+    out = kt._handle_complete({
+        "task_id": worker_env,
+        "summary": "done outside worker scope",
+        "metadata": {"files": 2, "worker_session_id": "user-provided"},
+    })
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "user-provided",
+        }
+    finally:
+        conn.close()
+
+
 def test_complete_with_result_only(worker_env):
     """`result` alone (without summary) is accepted for legacy compat."""
     from tools import kanban_tools as kt
     out = kt._handle_complete({"result": "legacy result"})
     d = json.loads(out)
     assert d["ok"] is True
+
+
+def test_complete_with_artifacts_lands_in_event_payload(worker_env):
+    """``artifacts=[...]`` rides into the completed event payload so the
+    gateway notifier can upload them as native attachments. See the
+    kanban notifier in gateway/run.py for the consumer side."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "rendered the chart",
+        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, worker_env)
+        # Find the completion event
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        payload = completed[0].payload or {}
+        assert payload.get("artifacts") == [
+            "/tmp/q3-revenue.png",
+            "/tmp/q3-report.pdf",
+        ]
+        # And the artifacts also live on metadata for downstream workers
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata.get("artifacts") == [
+            "/tmp/q3-revenue.png",
+            "/tmp/q3-report.pdf",
+        ]
+    finally:
+        conn.close()
+
+
+def test_complete_artifacts_accepts_single_string(worker_env):
+    """A bare string is auto-promoted to a single-element list for convenience."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "one chart",
+        "artifacts": "/tmp/chart.png",
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
+    finally:
+        conn.close()
+
+
+def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
+    """If the worker passes metadata.artifacts AND the top-level artifacts
+    param, merge the two without duplicates."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "merged",
+        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
+        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        # Order: existing entries first, then new ones, deduplicated.
+        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
+        assert run.metadata.get("other") == "fact"
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_non_list_artifacts(worker_env):
+    """Non-list, non-string artifacts should be rejected with a clear error."""
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "bad shape",
+        "artifacts": {"not": "a list"},
+    })
+    err = json.loads(out).get("error", "")
+    assert "artifacts must be a list" in err
 
 
 def test_complete_rejects_no_handoff(worker_env):
@@ -602,6 +768,75 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
+    """When the agent loop runs under ACP, the server propagates the
+    originating chat session id via HERMES_SESSION_ID. ``kanban_create``
+    reads it and stamps the new task so clients can render a per-session
+    board (issue: ACP session linkage on kanban tasks)."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "acp-sess-abc")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "from chat",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id == "acp-sess-abc"
+    finally:
+        conn.close()
+
+
+def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
+    """An explicit ``session_id`` arg from the model wins over the env
+    propagation. Edge case but exercised: a tool call could carry a
+    different session id (e.g. cross-session linking) and the explicit
+    arg should not be silently overwritten."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "from-env")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "explicit override",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "session_id": "explicit-arg",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id == "explicit-arg"
+    finally:
+        conn.close()
+
+
+def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
+    """No env var, no arg → session_id stays NULL. Important for backwards
+    compatibility: pre-ACP-propagation hosts and CLI-driven creates must
+    not accidentally inherit a stale id."""
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "no session",
+        "assignee": "peer",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.session_id is None
+    finally:
+        conn.close()
+
+
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")
@@ -858,6 +1093,11 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -880,6 +1120,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
 
     from run_agent import AIAgent
     a = AIAgent(

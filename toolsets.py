@@ -76,6 +76,16 @@ _HERMES_CORE_TOOLS = [
     "github_repo_list", "github_repo_view", "github_repo_delete", "github_repo_create",
 ]
 
+# Webhook events may originate from untrusted third-party content (for example,
+# public PR titles/comments). Keep the default webhook toolset intentionally
+# constrained to avoid local file/system execution by prompt injection.
+_HERMES_WEBHOOK_SAFE_TOOLS = [
+    "web_search",
+    "web_extract",
+    "vision_analyze",
+    "clarify",
+]
+
 
 # Assistant role uses the SAME tool set as core. The operator decides
 # whether a task is simple (Hermes does it himself with terminal /
@@ -595,7 +605,7 @@ TOOLSETS = {
 
     "hermes-webhook": {
         "description": "Webhook toolset - receive and process external webhook events",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_WEBHOOK_SAFE_TOOLS,
         "includes": []
     },
 

@@ -715,6 +715,21 @@ class _CodexCompletionsAdapter:
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
+            # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
+            # keywords (HTTP 400). Strip them here to match the parity guarantee that
+            # chat_completion_helpers.py provides for the main-agent xAI path.
+            try:
+                from tools.schema_sanitizer import (
+                    strip_pattern_and_format,
+                    strip_slash_enum,
+                )
+                tools, _ = strip_pattern_and_format(list(tools))
+                tools, _ = strip_slash_enum(tools)
+            except Exception as exc:
+                logger.warning(
+                    "Auxiliary client: failed to sanitize tool schemas for "
+                    "Codex/xAI Responses path: %s", exc,
+                )
             converted = []
             for t in tools:
                 fn = t.get("function", {}) if isinstance(t, dict) else {}
@@ -1575,7 +1590,10 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     with xAI Grok OAuth.
     """
     try:
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from hermes_cli.auth import (
+            DEFAULT_XAI_OAUTH_BASE_URL,
+            _xai_validate_inference_base_url,
+        )
 
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
@@ -1586,13 +1604,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     or getattr(entry, "access_token", "")
                     or ""
                 ).strip()
-                base_url = str(
+                base_url = _xai_validate_inference_base_url(
                     os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
                     or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-                    or getattr(entry, "runtime_base_url", None)
-                    or getattr(entry, "base_url", None)
-                    or DEFAULT_XAI_OAUTH_BASE_URL
-                ).strip().rstrip("/")
+                    or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
+                    or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
+                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+                )
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
@@ -2174,6 +2192,120 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _try_azure_foundry(
+    *,
+    model: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Resolve an Azure Foundry auxiliary client via the runtime resolver.
+
+    Mirrors the ``_try_anthropic`` / ``_try_nous`` shape but delegates to
+    :func:`hermes_cli.runtime_provider._resolve_azure_foundry_runtime` —
+    the same resolver the main agent uses — so:
+
+    * ``auth_mode: api_key`` (default) gets the static
+      ``AZURE_FOUNDRY_API_KEY`` string.
+    * ``auth_mode: entra_id`` gets a callable bearer-token provider
+      (``Callable[[], str]`` from
+      :mod:`agent.azure_identity_adapter`).
+    * Per-model ``api_mode`` auto-routing for GPT-5.x / o-series /
+      codex models works.
+    * ``model.entra.{tenant_id,client_id,authority,scope}`` config
+      fields propagate.
+    * Non-default ``model.base_url`` overrides are honored.
+
+    The OpenAI SDK accepts both shapes for ``api_key`` so the caller
+    can forward the result without coercion.
+
+    Returns ``(client, model)`` or ``(None, None)`` on failure.
+    """
+    try:
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+        from hermes_cli.auth import AuthError
+        from hermes_cli.config import load_config
+    except ImportError:
+        return None, None
+
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+    except Exception:
+        model_cfg = {}
+
+    try:
+        runtime = _resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg=model_cfg,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            target_model=model,
+        )
+    except AuthError as exc:
+        logger.debug("Auxiliary azure-foundry: %s", exc)
+        return None, None
+    except Exception as exc:
+        logger.debug("Auxiliary azure-foundry runtime error: %s", exc)
+        return None, None
+
+    api_key = runtime.get("api_key")
+    base_url = str(runtime.get("base_url", "") or "")
+    runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
+
+    # Empty-string check on api_key here would be wrong for callable
+    # token providers (callables are truthy and non-empty by definition).
+    # Bail only when api_key is None / empty string.
+    _has_key = bool(api_key) if not callable(api_key) else True
+    if not _has_key or not base_url:
+        return None, None
+
+    final_model = _normalize_resolved_model(
+        model or str(model_cfg.get("default") or ""),
+        "azure-foundry",
+    )
+    if not final_model:
+        # No fallback aux model for Azure — the user must have a
+        # deployment name. Surface that as "no client" so the auto
+        # chain falls through to the next provider rather than 404ing.
+        logger.debug(
+            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
+            model, model_cfg.get("default"),
+        )
+        return None, None
+
+    # Azure pre-v1 endpoints sometimes carry api-version query params
+    # in the base URL; the OpenAI SDK drops them when joining paths,
+    # so lift them out and pass via default_query.
+    extra: Dict[str, Any] = {}
+    _clean_base, _dq = _extract_url_query_params(base_url)
+    if _dq:
+        extra["default_query"] = _dq
+
+    client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
+
+    if runtime_api_mode == "codex_responses":
+        # GPT-5.x / o-series / codex models on Azure Foundry are
+        # Responses-API-only — wrap so chat.completions.create() is
+        # translated to /responses behind the scenes.
+        return CodexAuxiliaryClient(client, final_model), final_model
+
+    if runtime_api_mode == "anthropic_messages":
+        # Forward ``api_key`` verbatim — for static keys it's a string,
+        # for Entra ID it's a callable. ``_maybe_wrap_anthropic`` →
+        # ``build_anthropic_client`` detects the callable and installs
+        # the bearer-injecting httpx hook.
+        return _maybe_wrap_anthropic(
+            client, final_model, api_key,
+            base_url, runtime_api_mode,
+        ), final_model
+
+    # chat_completions — return the plain OpenAI client.
+    return client, final_model
+
+
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -2229,20 +2361,31 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
+_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
 
 
-def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
-    """Return a sanitized copy of a live main-runtime override."""
+def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a sanitized copy of a live main-runtime override.
+
+    Most fields are stripped strings. ``api_key`` may legitimately be a
+    zero-arg callable (Azure Foundry Entra ID token provider) — preserve
+    those as-is so auxiliary clients inherit the same authentication
+    surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
+    for ``api_key`` and calls it before every request.
+    """
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: Dict[str, str] = {}
+    normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)
+        # Preserve a callable api_key (Entra ID bearer provider) unchanged.
+        if field == "api_key" and callable(value) and not isinstance(value, str):
+            normalized[field] = value
+            continue
         if isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
     provider = normalized.get("provider")
-    if provider:
+    if isinstance(provider, str):
         normalized["provider"] = provider.lower()
     return normalized
 
@@ -3034,10 +3177,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     runtime_provider = runtime.get("provider", "")
-    runtime_model = runtime.get("model", "")
-    runtime_base_url = runtime.get("base_url", "")
+    runtime_model = str(runtime.get("model") or "")
+    runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = runtime.get("api_mode", "")
+    runtime_api_mode = str(runtime.get("api_mode") or "")
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -3065,8 +3208,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = runtime_provider or _read_main_provider()
-    main_model = runtime_model or _read_main_model()
+    main_provider = str(runtime_provider or _read_main_provider() or "")
+    main_model = str(runtime_model or _read_main_model() or "")
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -3405,7 +3548,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
-                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok Subscription)"
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
@@ -3506,7 +3649,11 @@ def resolve_provider_client(
             if client is not None:
                 final_model = _normalize_resolved_model(model or default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
-                _ckey = str(getattr(client, "api_key", "") or "")
+                # ``client.api_key`` may be a callable (Azure Foundry Entra
+                # bearer provider). Pass empty string for the wrapper-detection
+                # path — wrapping decisions are based on base_url + api_mode.
+                _raw_ckey = getattr(client, "api_key", "")
+                _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
                 client = _wrap_if_needed(client, final_model, _cbase, _ckey)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
@@ -3617,6 +3764,40 @@ def resolve_provider_client(
             return None, None
     except ImportError:
         pass
+
+    # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
+    #
+    # The generic PROVIDER_REGISTRY path below uses
+    # ``resolve_api_key_provider_credentials`` which only knows about the
+    # static ``AZURE_FOUNDRY_API_KEY`` env var. That misses two important
+    # cases for the ``azure-foundry`` provider:
+    #
+    #   1. ``model.auth_mode: entra_id`` — no static key exists; we need
+    #      a callable bearer-token provider from ``azure_identity_adapter``.
+    #   2. Non-default ``model.base_url`` (Foundry projects path) — the
+    #      env-var-only resolver doesn't apply config-yaml-driven URL
+    #      overrides.
+    #
+    # Delegate to the same runtime resolver the main agent uses so
+    # auxiliary tasks (title generation, compression, vision, embedding,
+    # session search) inherit the user's full Azure config.
+    if provider == "azure-foundry":
+        client, default_model = _try_azure_foundry(
+            model=model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            api_mode=api_mode,
+        )
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: azure-foundry requested but "
+                "runtime resolution failed (run: hermes doctor for "
+                "diagnostics)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
@@ -3878,6 +4059,37 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
+def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
+    """Return True when ``provider``/``model`` is known to accept image input.
+
+    Used by the vision auto-detect chain to skip the user's main provider
+    when it's known to be text-only (e.g. DeepSeek, gpt-oss without vision).
+    Without this guard, ``resolve_vision_provider_client(provider="auto")``
+    would happily return the main-provider client and any subsequent image
+    payload would surface as a cryptic provider-side error
+    (``unknown variant `image_url`, expected `text```, #31179).
+
+    Returns True when capability lookup is unknown — preserves the historical
+    behaviour of attempting the call, so providers we haven't catalogued yet
+    don't silently regress to text-only.
+    """
+    try:
+        from agent.image_routing import _lookup_supports_vision
+        from hermes_cli.config import load_config
+    except ImportError:
+        return True
+    try:
+        supports = _lookup_supports_vision(provider, model, load_config())
+    except Exception:  # pragma: no cover - defensive
+        return True
+    if supports is None:
+        # No capability data — keep current behaviour and let the call attempt
+        # happen rather than silently skipping. This avoids false-positive
+        # skips for new/custom providers.
+        return True
+    return bool(supports)
+
+
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
@@ -4016,6 +4228,23 @@ def resolve_vision_provider_client(
                 logger.debug(
                     "Vision auto-detect: skipping main provider %s (no "
                     "vision support) — falling through to aggregator chain",
+                    main_provider,
+                )
+            elif not _main_model_supports_vision(main_provider, vision_model):
+                # The main model is known to be text-only (e.g. DeepSeek V4,
+                # gpt-oss-120b without vision). Building a client and sending
+                # an image would produce a cryptic provider-side error like
+                # ``unknown variant `image_url`, expected `text``` (#31179).
+                # Fall through to the aggregator chain instead.
+                #
+                # Only log the provider name (not the model) — mirrors the
+                # sibling _PROVIDERS_WITHOUT_VISION branch above, and avoids
+                # CodeQL py/clear-text-logging-sensitive-data heuristic false
+                # positives on multi-value interpolations.
+                logger.debug(
+                    "Vision auto-detect: skipping main provider %s "
+                    "(reports no vision capability) — falling through to "
+                    "aggregator chain",
                     main_provider,
                 )
             else:
@@ -4429,6 +4658,23 @@ def _get_cached_client(
     return client, model or default_model
 
 
+# Aliases that target direct REST APIs not modeled as first-class providers
+# in PROVIDER_REGISTRY. Used for ``auxiliary.<task>.provider`` so users can
+# write the obvious name and have it resolve to a working ``custom`` endpoint
+# without needing to know our internal provider IDs.
+#
+# Why these specifically: PROVIDER_REGISTRY has ``openai-codex`` (OAuth) and
+# ``custom`` (manual base_url + OPENAI_API_KEY) but no plain ``openai`` for
+# direct API-key access. Users predictably type ``provider: openai`` and
+# expect it to use OPENAI_API_KEY against api.openai.com. Previously this
+# silently fell back to the user's main provider, sending OpenAI model names
+# to e.g. DeepSeek and producing cryptic ``unknown variant 'image_url'``
+# errors (issue #31179).
+_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
+    "openai": "https://api.openai.com/v1",
+}
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -4465,6 +4711,25 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
+    # Convenience aliases for direct API-key endpoints that aren't first-class
+    # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
+    # Applied to both explicit args and config-derived values. When the user
+    # has already supplied a base_url we keep their endpoint but still rewrite
+    # the provider to ``custom`` so resolution doesn't hit the
+    # PROVIDER_REGISTRY-only path (which has no ``openai`` entry).
+    def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        if not prov:
+            return prov, existing_base
+        target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
+        if target_base is None:
+            return prov, existing_base
+        return "custom", existing_base or target_base
+
+    if provider:
+        provider, base_url = _expand_direct_api_alias(provider, base_url)
+    if cfg_provider:
+        cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
+
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
@@ -4492,7 +4757,17 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
+    """Return the config dict for auxiliary.<task>, or {} when unavailable.
+
+    For plugin-registered auxiliary tasks (see
+    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
+    plugin's declared *defaults* are layered underneath the user's config
+    so an unconfigured plugin task still works:
+
+        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
+
+    Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
+    """
     if not task:
         return {}
     try:
@@ -4502,7 +4777,27 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    return task_config if isinstance(task_config, dict) else {}
+    if not isinstance(task_config, dict):
+        task_config = {}
+
+    # Layer plugin-declared defaults underneath user config so
+    # ctx.register_auxiliary_task(defaults={...}) takes effect without
+    # forcing the user to write config.yaml entries.
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for _entry in get_plugin_auxiliary_tasks():
+            if _entry.get("key") == task:
+                _defaults = _entry.get("defaults") or {}
+                if isinstance(_defaults, dict):
+                    merged = dict(_defaults)
+                    merged.update(task_config)
+                    return merged
+                break
+    except Exception:
+        # Plugin discovery failure must not break aux task config reads.
+        pass
+
+    return task_config
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:

@@ -206,7 +206,12 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks.\n"
+    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
+    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
+    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
+    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
+    "reclaim re-queues the task as `ready` without penalty (no failure counter "
+    "tick), but you lose your current run's progress.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -1106,9 +1111,11 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # applies on the Anthropic family — the policy is the discipline,
 # not the model. Substrings cover both bare names ("claude") and the
 # date-stamped variants ("claude-sonnet-4-6-20250929" etc).
+#
+# `deepseek` added by upstream 2026-05-25 — keep.
 TOOL_USE_ENFORCEMENT_MODELS = (
     "gpt", "codex", "gemini", "gemma", "grok", "glm",
-    "mimo", "qwen",
+    "mimo", "qwen", "deepseek",
     "claude", "sonnet", "opus", "haiku",
 )
 
