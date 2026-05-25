@@ -1,0 +1,21 @@
+Dockerfile
+  s_e5369d415d379b::t_25beb91bd8bc7c 38-46
+plugins/model-providers/claude-agent-sdk/__init__.py
+  s_e5369d415d379b::t_594430943c24d0 1-20,34,36-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "0f5c4ec77adcde23c129e3ef590dfc2e1a08ccd9",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
