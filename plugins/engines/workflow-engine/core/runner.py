@@ -44,16 +44,20 @@ def _artifact_path(state_dir: Path, workflow_name: str, session: str) -> Path:
 
 
 def _compute_clarity_score(wstate, schema) -> float:
-    """Programmatic clarity_score from schema weights.
+    """Programmatic clarity_score from schema weights + veto penalties.
 
     Components (each 0..1):
-      completeness — filled_required / required_total
-      confidence   — mean confidence over required slots
-      stability    — 1 if no contradictions, scaled by contradictions per turn
-      grounding    — placeholder 1.0 until P4 anti-pattern detectors land
-      contradictions — 1 - min(1, len(contradictions)/iteration)
+      completeness   filled_required / required_total
+      confidence     mean confidence over required slots
+      stability      1 - contradictions/iteration (rough)
+      grounding      1 - (training_grounded violations / required_total)
+      contradictions 1 - min(1, len(contradictions)/iteration)
+
+    Then subtract per-veto severity penalty from any violations
+    recorded into ``wstate.extras["last_violations"]`` by P4 detectors.
     """
     from .schema import SchemaSlots
+    from .anti_patterns import apply_penalty, Violation
     slots = wstate.slots
     weights = schema.clarity_score.weights or {}
 
@@ -64,12 +68,18 @@ def _compute_clarity_score(wstate, schema) -> float:
         req = slots.required_keys()
         conf = slots.confidence_dict()
         confidence = (sum(conf.get(k, 0.0) for k in req) / len(req)) if req else 0.0
+        req_total = max(1, len(req))
     else:
         confidence = 0.0
+        req_total = 1
 
     contradictions = 1.0 - min(1.0, len(wstate.contradictions) / max(1, wstate.iteration))
-    stability = contradictions          # rough proxy for now
-    grounding = 1.0                     # P4 will refine
+    stability = contradictions
+
+    # Grounding now derived from training_grounded violations
+    violations = wstate.extras.get("last_violations") or []
+    training_v = sum(1 for v in violations if v.get("name") == "training_grounded")
+    grounding = max(0.0, 1.0 - training_v / req_total)
 
     components = {
         "completeness": completeness,
@@ -83,9 +93,14 @@ def _compute_clarity_score(wstate, schema) -> float:
     for key, w in weights.items():
         weighted_sum += components.get(key, 0.0) * float(w)
         weight_total += float(w)
-    if weight_total <= 0:
-        return 0.0
-    return max(0.0, min(1.0, weighted_sum / weight_total))
+    base = (weighted_sum / weight_total) if weight_total > 0 else 0.0
+
+    # Apply veto penalties
+    veto_list = [
+        Violation(name=v["name"], severity=v["severity"], detail=v["detail"])
+        for v in violations
+    ]
+    return apply_penalty(base, veto_list)
 
 
 def run(
@@ -154,6 +169,30 @@ def run(
                     wstate.action_log.append("extractor: no changes")
             else:
                 wstate.action_log.append("extractor: skipped / no results")
+
+            # ── P4: programmatic anti-pattern detection ──────────────
+            from .anti_patterns import check_extraction, check_bot_reply
+            extr_violations = check_extraction(
+                config.schema, wstate.slots, wstate.user_history,
+            )
+            reply_violations: list = []
+            if prev_bot_msg:
+                reply_violations = check_bot_reply(
+                    config.schema, prev_bot_msg, wstate.user_history,
+                    iteration=wstate.iteration, phase=wstate.phase,
+                )
+            all_v = extr_violations + reply_violations
+            for v in all_v:
+                # Record into contradictions so clarity_score sees it
+                # and into action_log for human inspection.
+                wstate.contradictions.append(str(v))
+                wstate.action_log.append(f"anti-pattern: {v}")
+            # Stash full violations into extras for the artifact builder.
+            if all_v:
+                wstate.extras["last_violations"] = [
+                    {"name": v.name, "severity": v.severity, "detail": v.detail}
+                    for v in all_v
+                ]
     except Exception as e:
         # Never let extractor failure stop the engine — log and continue.
         wstate.action_log.append(f"extractor: error ({type(e).__name__}: {e})")
