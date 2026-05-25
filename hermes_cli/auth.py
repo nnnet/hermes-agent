@@ -473,8 +473,6 @@ try:
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
-            continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
         # openrouter/custom are aggregator/user-supplied and handled outside
@@ -482,16 +480,32 @@ try:
         # that relies on `openrouter not in PROVIDER_REGISTRY`).
         if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
             continue
-        _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
-        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
-        PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
-            id=_pp.name,
-            name=_pp.display_name or _pp.name,
-            auth_type="api_key",
-            inference_base_url=_pp.base_url,
-            api_key_env_vars=_api_key_vars or _pp.env_vars,
-            base_url_env_var=_base_url_var or "",
-        )
+        if _pp.auth_type == "api_key" and _pp.env_vars:
+            _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
+            _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="api_key",
+                inference_base_url=_pp.base_url,
+                api_key_env_vars=_api_key_vars or _pp.env_vars,
+                base_url_env_var=_base_url_var or "",
+            )
+        elif _pp.auth_type == "none":
+            # CLI-managed / self-managed auth (e.g. claude-agent-sdk reads
+            # ~/.claude/.credentials.json directly). resolve_provider only
+            # needs the slug to exist in PROVIDER_REGISTRY; no env vars or
+            # token refresh hooks are required for this auth shape.
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="external_process",
+                inference_base_url=_pp.base_url or "",
+                api_key_env_vars=(),
+                base_url_env_var="",
+            )
+        else:
+            continue
         # Also register aliases so resolve_provider() resolves them
         for _alias in _pp.aliases:
             if _alias not in PROVIDER_REGISTRY:
