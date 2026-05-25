@@ -2315,6 +2315,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)
+
+        # Non-api_key profiles (auth_type="none", "oauth_*", etc.) — no live
+        # fetch path here, but they can still surface a curated model list
+        # via ProviderProfile.fallback_models. Without this branch a plugin
+        # like model-providers/claude-agent-sdk shows up as a 0-models row
+        # in /model and the user can't select it.
+        if _p and _p.fallback_models:
+            return list(_p.fallback_models)
     except Exception:
         pass
 
