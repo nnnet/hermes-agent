@@ -70,7 +70,7 @@ class AnthropicCustomProfile(ProviderProfile):
 anthropic_custom = AnthropicCustomProfile(
     name="anthropic_custom",
     aliases=("anthropic-custom",),
-    display_name="Anthropic (custom endpoint)",
+    display_name="Anthropic-custom",
     description=(
         "Anthropic Messages protocol against a configurable base_url. "
         "Default target: CLR Gateway (llm.ketlu.com)."
