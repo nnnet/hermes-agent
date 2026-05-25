@@ -1,0 +1,23 @@
+plugins/engines/workflow-engine/core/runner.py
+  s_e5369d415d379b::t_b7aa273c11ed40 137-150,158-165
+plugins/engines/workflow-engine/core/phases/decompose_reflect_lock.py
+  s_e5369d415d379b::t_d0aa38ae233378 110-123,125-127,132
+plugins/engines/workflow-engine/core/detectors.py
+  s_e5369d415d379b::t_3d0ff4ad374b99 305-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "5f2d9e2685dc9ffc9df3f7efe2f4a18bfcbcee02",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
