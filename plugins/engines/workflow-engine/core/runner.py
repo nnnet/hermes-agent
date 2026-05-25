@@ -33,6 +33,61 @@ def _state_path(state_dir: Path, workflow_name: str, session: str) -> Path:
     return state_dir / workflow_name / f"{session}.json"
 
 
+def _artifact_path(state_dir: Path, workflow_name: str, session: str) -> Path:
+    """Per-session final YAML artifact (P5).
+
+    Lives in ``<state_dir>/<workflow>/artifacts/<session>.yaml`` so that
+    state JSON (engine internal) and artifact YAML (downstream-skill
+    payload) coexist without name collision.
+    """
+    return state_dir / workflow_name / "artifacts" / f"{session}.yaml"
+
+
+def _compute_clarity_score(wstate, schema) -> float:
+    """Programmatic clarity_score from schema weights.
+
+    Components (each 0..1):
+      completeness — filled_required / required_total
+      confidence   — mean confidence over required slots
+      stability    — 1 if no contradictions, scaled by contradictions per turn
+      grounding    — placeholder 1.0 until P4 anti-pattern detectors land
+      contradictions — 1 - min(1, len(contradictions)/iteration)
+    """
+    from .schema import SchemaSlots
+    slots = wstate.slots
+    weights = schema.clarity_score.weights or {}
+
+    completeness = slots.completeness() if hasattr(slots, "completeness") else 0.0
+
+    # Mean confidence over required slots only
+    if isinstance(slots, SchemaSlots):
+        req = slots.required_keys()
+        conf = slots.confidence_dict()
+        confidence = (sum(conf.get(k, 0.0) for k in req) / len(req)) if req else 0.0
+    else:
+        confidence = 0.0
+
+    contradictions = 1.0 - min(1.0, len(wstate.contradictions) / max(1, wstate.iteration))
+    stability = contradictions          # rough proxy for now
+    grounding = 1.0                     # P4 will refine
+
+    components = {
+        "completeness": completeness,
+        "stability": stability,
+        "confidence": confidence,
+        "grounding": grounding,
+        "contradictions": contradictions,
+    }
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for key, w in weights.items():
+        weighted_sum += components.get(key, 0.0) * float(w)
+        weight_total += float(w)
+    if weight_total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, weighted_sum / weight_total))
+
+
 def run(
     config: WorkflowConfig,
     session: str,
@@ -130,7 +185,54 @@ def run(
     )
     wstate.save(state_path)
 
-    return {
+    # ── P5: final artifact ───────────────────────────────────────────
+    # When the workflow reaches its terminal phase (typically DONE),
+    # emit a YAML artifact next to the state file. The artifact is what
+    # downstream skills consume; `желание[]` (raw user-wishes audit) is
+    # included for traceability but `export.fields` defines the subset
+    # that crosses the skill boundary (only `goal` etc.).
+    artifact_path = _artifact_path(sdir, config.name, session)
+    artifact_data: dict[str, Any] | None = None
+    schema = getattr(config, "schema", None)
+    is_terminal = bool(
+        schema and target_phase == schema.phases.terminal
+    )
+    if is_terminal and schema is not None:
+        from .schema import SchemaSlots, build_final_artifact
+        if isinstance(wstate.slots, SchemaSlots):
+            clarity = _compute_clarity_score(wstate, schema)
+            artifact_data = build_final_artifact(
+                schema,
+                wstate.slots,
+                session_id=session,
+                turns_used=wstate.iteration,
+                clarity_score=clarity,
+                желание=wstate.user_history,
+                bot_history=wstate.bot_history,
+            )
+            try:
+                import yaml as _yaml
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact_path.write_text(
+                    _yaml.safe_dump(
+                        artifact_data,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
+                wstate.action_log.append(
+                    f"artifact: wrote {artifact_path.name} "
+                    f"clarity={clarity:.3f}"
+                )
+                # Re-save state so the action_log line lands on disk too
+                wstate.save(state_path)
+            except Exception as e:
+                wstate.action_log.append(
+                    f"artifact: write failed ({type(e).__name__}: {e})"
+                )
+
+    result = {
         "workflow": config.name,
         "phase": target_phase,
         "iteration": wstate.iteration,
@@ -139,6 +241,10 @@ def run(
         "instructions_for_bot": instructions,
         "state_file": str(state_path),
     }
+    if artifact_data is not None:
+        result["artifact_file"] = str(artifact_path)
+        result["artifact"] = artifact_data
+    return result
 
 
 def run_status(

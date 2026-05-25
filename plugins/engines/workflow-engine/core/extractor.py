@@ -64,7 +64,7 @@ class ExtractorConfig:
     api_key: str = "not-needed"
     model: str = "claude-haiku-4-5"
     max_tokens: int = 1024
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 60.0
     conversation_window: int = 6   # last N turns (user + bot interleaved)
     enabled: bool = True
 
@@ -75,7 +75,7 @@ class ExtractorConfig:
             api_key=os.getenv("WORKFLOW_EXTRACTOR_API_KEY", "not-needed"),
             model=os.getenv("WORKFLOW_EXTRACTOR_MODEL", "claude-haiku-4-5"),
             max_tokens=int(os.getenv("WORKFLOW_EXTRACTOR_MAX_TOKENS", "1024")),
-            timeout_seconds=float(os.getenv("WORKFLOW_EXTRACTOR_TIMEOUT", "30")),
+            timeout_seconds=float(os.getenv("WORKFLOW_EXTRACTOR_TIMEOUT", "60")),
             conversation_window=int(os.getenv("WORKFLOW_EXTRACTOR_WINDOW", "6")),
             enabled=os.getenv("WORKFLOW_EXTRACTOR_ENABLED", "1") != "0",
         )
