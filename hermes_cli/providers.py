@@ -219,6 +219,51 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
 }
 
 
+# Auto-extend HERMES_OVERLAYS with any provider registered by a
+# plugins/model-providers/<name>/ plugin that is not already declared
+# above. Without this, get_provider() returns None for plugin-only
+# providers, which makes them unreachable from /model and the picker
+# even though they show up in the picker's provider list (which uses
+# the separate CANONICAL_PROVIDERS registry).
+def _api_mode_to_transport(api_mode: str) -> str:
+    """Map ProviderProfile.api_mode → HermesOverlay.transport."""
+    if not api_mode:
+        return "openai_chat"
+    if api_mode == "anthropic_messages":
+        return "anthropic_messages"
+    if api_mode == "codex_responses":
+        return "codex_responses"
+    if api_mode == "bedrock_converse":
+        return "bedrock_converse"
+    # claude_agent_sdk_single_turn and any other custom transport keep
+    # their api_mode string verbatim — downstream resolvers dispatch on it.
+    return api_mode
+
+
+try:
+    from providers import list_providers as _list_providers_for_overlays
+    for _pp in _list_providers_for_overlays():
+        if _pp.name in HERMES_OVERLAYS:
+            continue
+        _extra_env = tuple(
+            v for v in _pp.env_vars
+            if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+        )
+        _bu_env = next(
+            (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+            "",
+        )
+        HERMES_OVERLAYS[_pp.name] = HermesOverlay(
+            transport=_api_mode_to_transport(_pp.api_mode),
+            auth_type=_pp.auth_type or "api_key",
+            extra_env_vars=_extra_env,
+            base_url_override=_pp.base_url or "",
+            base_url_env_var=_bu_env,
+        )
+except Exception:
+    pass
+
+
 # -- Resolved provider -------------------------------------------------------
 # The merged result of models.dev + overlay + user config.
 
