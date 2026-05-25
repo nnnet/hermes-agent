@@ -8195,6 +8195,15 @@ class GatewayRunner:
         # See tools.desire_to_goal_gate for shared state used by both this
         # injection point AND registry.dispatch (which blocks side-effecting
         # tools until `skill_view(desire-to-goal)` has fired).
+        #
+        # When the gate is active, this block ALSO drives the workflow-engine
+        # directly: invokes the per-skill cli.py with the user's message,
+        # parses the returned mini_prompt + state_summary, and injects them
+        # into context_prompt. The main bot no longer has to call skill_view
+        # or shell out to the engine — it receives the engine's verbatim
+        # output as a system note and forwards it. This closes the gap where
+        # the bot ignored the SKILL.md instruction and answered from
+        # training instead.
         try:
             from tools import desire_to_goal_gate as f1_gate
             sid = session_entry.session_id
@@ -8205,15 +8214,74 @@ class GatewayRunner:
             if text_match and not sticky_active:
                 f1_gate.activate(sid)
             if text_match or sticky_active:
+                # Inline the engine call. Best-effort — engine failure must
+                # not block the message; we degrade to the static PRELOAD
+                # note. Subprocess timeout 75s covers extractor cold start.
+                import json as _json
+                import subprocess as _subprocess
+                engine_block = ""
+                try:
+                    _wf_dir = "/opt/data/skills/orientation/desire-to-goal/workflow"
+                    _engine_argv = [
+                        "python3", "/opt/workflow-engine/cli.py",
+                        "--workflow", _wf_dir,
+                        "--session", str(sid or "default"),
+                        "--user", event.text or "",
+                    ]
+                    _r = _subprocess.run(
+                        _engine_argv,
+                        capture_output=True, text=True, timeout=75,
+                    )
+                    if _r.returncode == 0 and _r.stdout.strip():
+                        _payload = _json.loads(_r.stdout)
+                        _mp = (_payload.get("mini_prompt") or "").strip()
+                        _phase = _payload.get("phase", "")
+                        _summary = _payload.get("state_summary", {}) or {}
+                        _instr = (_payload.get("instructions_for_bot") or "").strip()
+                        engine_block = (
+                            "[F1 workflow-engine — pre-computed reply]\n"
+                            f"Phase: {_phase}\n"
+                            f"Slots: {_json.dumps(_summary.get('slots') or {}, ensure_ascii=False)}\n"
+                            f"Completeness: {_summary.get('completeness', 0):.2f}\n"
+                            f"Iteration: {_summary.get('iteration', 0)}\n\n"
+                            "**Your reply MUST be the mini_prompt below, "
+                            "verbatim (substituting `<placeholders>` from "
+                            "slots when present). The engine already ran the "
+                            "slot extractor and routed phases — do NOT "
+                            "re-derive, do NOT brand-list, do NOT add tool "
+                            "calls in this turn.**\n\n"
+                            f"<mini_prompt>\n{_mp}\n</mini_prompt>\n\n"
+                            f"Instruction: {_instr}\n"
+                        )
+                        if _payload.get("artifact_file"):
+                            engine_block += (
+                                f"\nArtifact written: {_payload['artifact_file']}\n"
+                            )
+                    else:
+                        logger.warning(
+                            "F1 engine call rc=%s stderr=%r",
+                            _r.returncode, _r.stderr[:300] if _r.stderr else "",
+                        )
+                except Exception as _ee:
+                    logger.warning("F1 engine call failed: %s", _ee)
+
+                # Compose final context: engine output (if any) FIRST, then
+                # the static preload note (cheap belt-and-suspenders for
+                # the cases when the engine block is empty).
+                prepend_parts = []
+                if engine_block:
+                    prepend_parts.append(engine_block)
+                prepend_parts.append(DESIRE_TO_GOAL_PRELOAD_NOTE)
                 context_prompt = (
-                    DESIRE_TO_GOAL_PRELOAD_NOTE + "\n\n" + context_prompt
+                    "\n\n".join(prepend_parts) + "\n\n" + context_prompt
                 )
                 logger.info(
                     "[F1 gate] active for session=%s "
-                    "(text_match=%s, sticky=%s, skill_loaded=%s)",
+                    "(text_match=%s, sticky=%s, skill_loaded=%s, engine=%s)",
                     sid[:12] if sid else "?",
                     text_match, sticky_active,
                     f1_gate.has_skill_loaded(sid),
+                    "ok" if engine_block else "skipped",
                 )
             f1_gate.housekeep()
         except Exception:
