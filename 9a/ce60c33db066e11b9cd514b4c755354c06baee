@@ -1,0 +1,27 @@
+Dockerfile
+  s_e5369d415d379b::t_f569835016643f 179
+plugins/engines/workflow-engine/core/schema.py
+  s_e5369d415d379b::t_1cde8a0dc72179 1-324
+plugins/engines/workflow-engine/core/state.py
+  s_e5369d415d379b::t_5edf824be4b239 232-257
+pyproject.toml
+  s_e5369d415d379b::t_dbd4440aa75a82 79-82
+uv.lock
+  ai_agent 1796-1798,1898,1905,4195-4204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "9ace60c33db066e11b9cd514b4c755354c06baee",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
