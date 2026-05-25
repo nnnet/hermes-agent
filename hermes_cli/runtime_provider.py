@@ -1272,26 +1272,8 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            # Honor inline api_key on model config FIRST — third-party
-            # Anthropic-compatible proxies (CLR-Gateway, LiteLLM,
-            # self-hosted) ship their own keys that don't follow Anthropic
-            # OAuth conventions; falling straight to resolve_anthropic_token()
-            # picks up the Claude Code OAuth token from
-            # ~/.claude/.credentials.json and sends it to the proxy → 401
-            # INVALID_USER_TOKEN. Mirrors the Azure branch above (line 1261)
-            # and the custom-provider branch elsewhere in this file.
-            token = ""
-            for hint_key in ("key_env", "api_key_env"):
-                env_var = str(model_cfg.get(hint_key) or "").strip()
-                if env_var:
-                    token = os.getenv(env_var, "").strip()
-                    if token:
-                        break
-            if not token:
-                token = str(model_cfg.get("api_key") or "").strip()
-            if not token:
-                from agent.anthropic_adapter import resolve_anthropic_token
-                token = resolve_anthropic_token()
+            from agent.anthropic_adapter import resolve_anthropic_token
+            token = resolve_anthropic_token()
             if not token:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
