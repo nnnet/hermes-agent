@@ -1,0 +1,23 @@
+plugins/engines/workflow-engine/core/extractor.py
+  s_e5369d415d379b::t_7d665ec782489b 67
+  s_e5369d415d379b::t_1835b9cf281307 78
+plugins/engines/workflow-engine/core/runner.py
+  s_e5369d415d379b::t_74c677533cdaa9 188-235,244-247
+  s_e5369d415d379b::t_3004985bae3059 36-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "8368dd6c03ec0476a0e5b182e6b68a141aa99a99",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
