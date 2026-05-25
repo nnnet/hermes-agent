@@ -457,6 +457,9 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    # claude-agent-sdk transport ⇒ same api_mode string. The runtime
+    # resolver and agent_init.py both branch on this value.
+    "claude_agent_sdk_single_turn": "claude_agent_sdk_single_turn",
 }
 
 

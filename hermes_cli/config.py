@@ -3098,6 +3098,11 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
+        # Override the anthropic-version header on Anthropic-compatible
+        # endpoints (native + custom proxies). Empty/missing keeps the
+        # SDK's bundled default. Read by agent_init.py before
+        # build_anthropic_client().
+        "anthropic_version",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:

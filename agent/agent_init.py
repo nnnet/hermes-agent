@@ -289,7 +289,7 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_agent_sdk_single_turn"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -687,6 +687,32 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.api_mode == "claude_agent_sdk_single_turn":
+        # claude-agent-sdk — host CLI subscription auth.  No HTTP base URL,
+        # no API key: the official ``claude-agent-sdk`` Python package
+        # spawns the local ``claude`` CLI subprocess for every call and
+        # reads credentials from ``~/.claude/.credentials.json``.
+        #
+        # We instantiate ``ClaudeAgentSdkAuxiliaryClient`` directly —
+        # it implements the OpenAI client surface (``.chat.completions.create``)
+        # over single-turn ``query()`` calls, so the rest of the
+        # conversation loop sees the same interface as any other
+        # chat_completions provider.  No ``build_anthropic_client`` /
+        # ``_create_openai_client`` involvement.
+        from agent.auxiliary_client import (
+            AsyncClaudeAgentSdkAuxiliaryClient,
+            ClaudeAgentSdkAuxiliaryClient,
+        )
+        _cas_sync = ClaudeAgentSdkAuxiliaryClient(agent.model)
+        agent.client = AsyncClaudeAgentSdkAuxiliaryClient(_cas_sync)
+        agent._client_kwargs = {
+            "api_key": _cas_sync.api_key,
+            "base_url": _cas_sync.base_url,
+        }
+        agent.api_key = _cas_sync.api_key
+        agent.base_url = _cas_sync.base_url
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Agent SDK — host CLI)")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

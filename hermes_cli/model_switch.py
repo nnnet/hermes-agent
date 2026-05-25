@@ -1555,6 +1555,13 @@ def list_authenticated_providers(
             # available, unless the provider explicitly opts out via
             # discover_models: false (e.g. dedicated endpoints that expose
             # the entire aggregator catalog via /models).
+            #
+            # When the config block declares an explicit ``models:`` list we
+            # treat it as the source of truth: live discovery becomes a
+            # SUPPLEMENT (added on top, deduped) rather than a REPLACEMENT.
+            # This prevents stale entries from a proxy's /v1/models cache
+            # (e.g. Meridian still listing claude-opus-4-6 alongside 4-7) from
+            # masking the curated set the user pinned in config.yaml.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1562,7 +1569,8 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+            _config_pinned = bool(models_list)
+            if api_url and api_key and discover and not _config_pinned:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1570,6 +1578,16 @@ def list_authenticated_providers(
                         models_list = live_models
                 except Exception:
                     pass
+            # Final dedup pass — preserves order, drops repeats from
+            # default_model + models: overlap or upstream catalogue noise.
+            if models_list:
+                _seen_dedup: set = set()
+                _deduped: list = []
+                for _m in models_list:
+                    if _m and _m not in _seen_dedup:
+                        _seen_dedup.add(_m)
+                        _deduped.append(_m)
+                models_list = _deduped
 
             results.append({
                 "slug": ep_name,

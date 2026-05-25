@@ -1623,6 +1623,82 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+# ────────────────────────── F1 vague-desire gate ──────────────────────
+#
+# When the user's inbound message matches a "vague desire" pattern, we
+# prepend a high-priority system note to the context prompt telling the
+# agent to call `skill_view("orientation/desire-to-goal")` BEFORE doing
+# anything else. The prompt-builder's ASSISTANT_DELEGATION_GUIDANCE has
+# the same advice but in a large block that sonnet sometimes ignores
+# (observed in F1 calibration 2026-05-24 batch post-harvest-fix-002:
+# bot replied in 1 API call without skill_view on a textbook vague
+# build-pattern «Бот, торгующий крипту прибыльно»). The contextual
+# injection sits right next to the user's message and is much harder
+# to skip.
+#
+# This is GATEWAY-level enforcement — independent of prompt order or
+# compression. False positives are acceptable (extra clarification on
+# a borderline message is cheap); false negatives (skill missed on a
+# truly vague build-request) are expensive (drift / wrong artefact).
+VAGUE_DESIRE_PATTERNS = [
+    # Quality adverbs — "true goal hides in adverb" trap
+    r"\bприбыльн", r"\bэффективн", r"\bудобн", r"\bпонятн",
+    r"\bнадёжн", r"\bнадежн", r"\bкрасив", r"\bбыстр",
+    # Build-verb means (the proposed tool)
+    r"\bбот[\s,]", r"\bбота\b", r"\bдашборд", r"\bсайт",
+    r"\bмагазин", r"\bсистем", r"\bинструмент", r"\bсервис",
+    r"\bприложени", r"\bпайплайн", r"\bпроект", r"\bкоманд",
+    r"\bкурс\b", r"\bканал\b",
+    # Vague verbs
+    r"\bпомоги", r"\bспроектируй", r"\bпридумай", r"\bразработай",
+    r"\bоптимизируй", r"\bулучши", r"\bавтоматизируй",
+    r"\bразберись", r"\bспланируй", r"\bнайди мне\b",
+    r"\bподбирай", r"\bмониторь",
+    # Multi-step "сделай мне X" / "нужна штука для Y"
+    r"\bсделай мне\b", r"\bнужна штука\b", r"\bнужн[ао] что-то",
+    r"\bвыучи меня",
+]
+VAGUE_DESIRE_RE = re.compile("|".join(VAGUE_DESIRE_PATTERNS), re.IGNORECASE)
+
+# Sticky F1 gate state lives in tools.desire_to_goal_gate (shared with
+# registry.dispatch so it can hard-block side-effecting tools).
+
+DESIRE_TO_GOAL_PRELOAD_NOTE = (
+    "[ATTENTION — F1 vague-desire gate ACTIVE]\n"
+    "This conversation matched a vague-desire pattern. The desire-to-goal "
+    "protocol is in force for EVERY turn until the user confirms the "
+    "decomposition.\n\n"
+    "**If the «истинная цель / средство / место» decomposition has NOT "
+    "been shown yet**: your VERY FIRST action MUST be call "
+    "`skill_view(name=\"orientation/desire-to-goal\")` and follow its "
+    "`ПЕРВЫЙ ход` section — output the 4-7 line decomposition and ask "
+    "the user to confirm.\n\n"
+    "**If decomposition was shown but user hasn't confirmed yet**: wait "
+    "for explicit confirmation. Do NOT proceed to forbidden actions "
+    "below.\n\n"
+    "**If decomposition was shown AND user confirmed**: you may proceed; "
+    "decompose into self vs delegate (see ASSISTANT_DELEGATION_GUIDANCE) "
+    "and act accordingly.\n\n"
+    "FORBIDDEN until decomposition is shown AND user confirms:\n"
+    "- numbered solution variants of any kind (A/B/C, table of options, "
+    "list of strategies / tools / approaches with concrete details)\n"
+    "- config questions about the proposed means (which exchange? which "
+    "stack? paper or real? which CMS? which API? which framework?)\n"
+    "- direct execution: writing files, calling terminal, spawning chiefs\n"
+    "- referencing ANY user-specific state (existing code, accounts, "
+    "balances, levels, prior projects, schedules, settings) AS IF IT "
+    "EXISTS — unless verified in THIS session via `read_file` / "
+    "`terminal` / `gh` API / `hindsight_recall` and you have concrete "
+    "evidence to cite. Without evidence: either ASK, or phrase "
+    "conditionally («если есть — могу проверить»). Generic rule, applies "
+    "to any domain.\n\n"
+    "Skip THIS gate ONLY if the user's message is a one-shot concrete "
+    "command with a clear single artefact (e.g. «удали репозиторий X», "
+    "«напомни мне завтра в 9»). For those, your decomposition would be "
+    "trivial and a ritual — just execute."
+)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -8097,7 +8173,7 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
@@ -8114,7 +8190,35 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # F1 vague-desire gate — STICKY per session, ENFORCED at tool-dispatch.
+        # See tools.desire_to_goal_gate for shared state used by both this
+        # injection point AND registry.dispatch (which blocks side-effecting
+        # tools until `skill_view(desire-to-goal)` has fired).
+        try:
+            from tools import desire_to_goal_gate as f1_gate
+            sid = session_entry.session_id
+            text_match = bool(
+                event.text and VAGUE_DESIRE_RE.search(event.text)
+            )
+            sticky_active = f1_gate.is_active(sid)
+            if text_match and not sticky_active:
+                f1_gate.activate(sid)
+            if text_match or sticky_active:
+                context_prompt = (
+                    DESIRE_TO_GOAL_PRELOAD_NOTE + "\n\n" + context_prompt
+                )
+                logger.info(
+                    "[F1 gate] active for session=%s "
+                    "(text_match=%s, sticky=%s, skill_loaded=%s)",
+                    sid[:12] if sid else "?",
+                    text_match, sticky_active,
+                    f1_gate.has_skill_loaded(sid),
+                )
+            f1_gate.housekeep()
+        except Exception:
+            logger.debug("F1 vague-desire gate check failed", exc_info=True)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):

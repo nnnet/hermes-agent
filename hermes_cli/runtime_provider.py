@@ -1251,6 +1251,28 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # claude-agent-sdk (and any other auth_type=none plugin) short-circuit.
+    # These providers carry no HTTP base_url and no API key — auth lives
+    # inside a CLI subprocess (~/.claude/.credentials.json for the official
+    # Claude Code CLI). Falling through to the openrouter-default path
+    # below would emit base_url=https://openrouter.ai/api/v1 and route
+    # the call to a third-party aggregator.
+    try:
+        from providers import get_provider_profile as _gpf_rt
+        _rt_profile = _gpf_rt(requested_provider)
+    except Exception:
+        _rt_profile = None
+    if _rt_profile is not None and getattr(_rt_profile, "auth_type", "") == "none":
+        _rt_api_mode = getattr(_rt_profile, "api_mode", "") or "chat_completions"
+        return {
+            "provider": requested_provider,
+            "api_mode": _rt_api_mode,
+            "base_url": "",
+            "api_key": "",
+            "source": "plugin-self-managed",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
