@@ -1,0 +1,29 @@
+hermes_cli/model_switch.py
+  s_e5369d415d379b::t_883bd1407abf8a 1558-1564,1572
+  s_e5369d415d379b::t_1a4aa9fa79475e 1573,1581-1590
+hermes_cli/providers.py
+  s_e5369d415d379b::t_84e93fbffa710e 460-462
+hermes_cli/config.py
+  s_e5369d415d379b::t_e4479b559073cd 3101-3105
+hermes_cli/runtime_provider.py
+  s_e5369d415d379b::t_8178ca50ef4003 1254-1275
+agent/agent_init.py
+  s_e5369d415d379b::t_7d0e64382b2184 292
+  s_e5369d415d379b::t_7ae0112dd92017 690-715
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "38619fb499c40c7a53d0a5099207e89a21464d36",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
