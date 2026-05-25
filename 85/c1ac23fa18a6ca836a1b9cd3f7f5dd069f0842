@@ -1,0 +1,26 @@
+plugins/engines/workflow-engine/core/anti_patterns.py
+  s_e5369d415d379b::t_339a5c7f059aa5 1-241
+plugins/engines/workflow-engine/core/runner.py
+  s_e5369d415d379b::t_e76808c9adf1b7 47,50-57,60,71,74,77-82,96-103
+  s_e5369d415d379b::t_068413a36bb686 172-195
+plugins/engines/workflow-engine/core/phases/decompose_reflect_lock.py
+  s_e5369d415d379b::t_d5adddfd7884db 1-121
+plugins/engines/workflow-engine/core/phases/__init__.py
+  s_e5369d415d379b::t_87a1b10c837e1b 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "85c1ac23fa18a6ca836a1b9cd3f7f5dd069f0842",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
