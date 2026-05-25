@@ -602,10 +602,15 @@ def init_agent(
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
         else:
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = agent.provider == "anthropic"
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic
+            # AND the base URL points at native Anthropic (api.anthropic.com).
+            # Third-party Anthropic-compatible proxies (CLR-Gateway, LiteLLM,
+            # self-hosted) ship their own keys; sending an Anthropic OAuth token
+            # to those endpoints triggers 401 INVALID_USER_TOKEN.
+            _is_native_anthropic = (
+                agent.provider == "anthropic"
+                and "anthropic.com" in (base_url or "").lower()
+            )
             effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
 
             # MiniMax OAuth issues short-lived (~15-min) access tokens. The

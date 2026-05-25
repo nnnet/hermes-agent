@@ -2847,8 +2847,13 @@ class AIAgent:
             return False
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
-        _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        # Same applies to ANY third-party Anthropic-compatible proxy
+        # (CLR-Gateway, LiteLLM, self-hosted): they ship their own keys
+        # that aren't Anthropic OAuth tokens; replacing the static key with
+        # an Anthropic OAuth token sends it to the third-party endpoint
+        # which rejects with 401 INVALID_USER_TOKEN.
+        _base = (getattr(self, "_anthropic_base_url", "") or "").lower()
+        if _base and "anthropic.com" not in _base:
             return False
 
         try:
