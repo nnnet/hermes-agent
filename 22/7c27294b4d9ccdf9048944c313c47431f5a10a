@@ -1,0 +1,19 @@
+hermes_cli/runtime_provider.py
+  s_e5369d415d379b::t_15bb833f9e58bc 1275-1294
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "227c27294b4d9ccdf9048944c313c47431f5a10a",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
