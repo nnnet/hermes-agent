@@ -1443,6 +1443,14 @@ def list_authenticated_providers(
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
             _cp_model_ids = curated.get(_cp.slug, [])
+            # Fall back to ProviderProfile.fallback_models (set by plugins
+            # like model-providers/clr-gateway). Without this the picker
+            # shows a 0-models canonical row and the user can't switch.
+            if not _cp_model_ids:
+                try:
+                    _cp_model_ids = provider_model_ids(_cp.slug) or []
+                except Exception:
+                    _cp_model_ids = []
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
