@@ -1,0 +1,38 @@
+plugins/desire-to-goal-driver/__init__.py
+  s_e5369d415d379b::t_fbfde68c3c1f78 730-773,775-776,778-779,792,795-797,799
+  s_e5369d415d379b::t_c282f3ada63ed0 794,798
+  s_e5369d415d379b::t_a0c3502a5212a4 114-127
+  s_e5369d415d379b::t_d9e3cccb8dd0a9 292-310,312-402,410,414-418,433-441,444-447,450,456-503
+  s_e5369d415d379b::t_aaca09a2a18602 634-656
+  s_e5369d415d379b::t_1edcb16e5cbb29 135-137,140-142,145,147,157,191-202,210-214,217-220,226-235,279-284,286-288
+  s_e5369d415d379b::t_2dbe42cc3b14c0 507-535
+  s_e5369d415d379b::t_d55e7587a02a35 248-260,273,285
+  s_e5369d415d379b::t_8476c3d040c942 138-139,143-144,146,148-156,158-190
+  s_e5369d415d379b::t_ab05c30a63b15c 203-209,215-216,221-225
+  s_e5369d415d379b::t_4a48f730d732db 504-506,536-584,586-587,591-600,605-606,608-613,615-629,631,657-665,668-674,678,681-685,694-695,704-705,722,725
+  s_e5369d415d379b::t_a7425f46c10ff4 419-432,442-443,448-449,451-455
+  s_e5369d415d379b::t_0a3b84263115c6 98-101,128-132
+  s_e5369d415d379b::t_d538a189e8237e 777,780-791
+  s_e5369d415d379b::t_cb42abfd0dd5d6 45,54-59
+  s_e5369d415d379b::t_e6f9631b07990c 666-667
+plugins/engines/workflow-engine/core/phases/decompose_reflect_lock.py
+  s_e5369d415d379b::t_df586e64ae0463 84-95,97-104
+agent/prompt_builder.py
+  s_e5369d415d379b::t_231e0ce96a5a86 1133-1152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b056506639b90c593dde57ea370361511d1d4402",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
