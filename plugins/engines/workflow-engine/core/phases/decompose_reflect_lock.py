@@ -81,11 +81,27 @@ def build_decide_fn(
         if detectors.detect_user_pushed_for_action(user_msg):
             wstate.extras["user_pushed_for_action"] = True
 
-        # Motivation tracking — first turn always asks, subsequent
-        # turns flag answered when user said something non-refusal-ish
-        # containing qualifier hints (потому что / чтобы / зачем тебе).
+        # Motivation tracking. Two independent triggers (either flips
+        # motivation_answered=True):
+        #   1. Extractor confidence on `мотивация` slot ≥ threshold_high
+        #      — the LLM already decided the user answered the "why".
+        #      This is the PRIMARY signal; the keyword heuristic below
+        #      was the only signal until 2026-05-27 and produced
+        #      false-negatives for terse answers like "Финансовый
+        #      результат." / "cashflow каждый месяц." which lack the
+        #      qualifier connectives.
+        #   2. Legacy keyword sweep — user said «потому что / чтобы /
+        #      зачем тебе» on a non-refusal turn. Kept as belt-and-
+        #      suspenders for cases where extractor missed.
         if wstate.extras.get("motivation_asked"):
-            if user_msg and not detectors.is_non_answer(user_msg, "open"):
+            try:
+                mot_conf = wstate.slots._confidence.get("мотивация", 0.0)
+                threshold_high = schema.confidence.threshold_high
+            except AttributeError:
+                mot_conf, threshold_high = 0.0, 1.0
+            if mot_conf >= threshold_high:
+                wstate.extras["motivation_answered"] = True
+            elif user_msg and not detectors.is_non_answer(user_msg, "open"):
                 if any(
                     q in user_msg.lower()
                     for q in detectors.DEFAULT_QUALIFIER_HINTS
