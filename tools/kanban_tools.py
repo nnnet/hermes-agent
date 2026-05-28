@@ -1,8 +1,10 @@
 """Kanban tools — structured tool-call surface for worker + orchestrator agents.
 
-These tools are only registered into the model's schema when the agent is
-running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set). A
-normal ``hermes chat`` session sees **zero** kanban tools in its schema.
+These tools are registered into the model's schema when the agent is
+running under the dispatcher (env var ``HERMES_KANBAN_TASK`` set) or when
+the active profile explicitly enables the ``kanban`` toolset for
+orchestrator work. A normal ``hermes chat`` session still sees **zero**
+kanban tools in its schema unless configured.
 
 Why tools instead of just shelling out to ``hermes kanban``?
 
@@ -20,8 +22,9 @@ Why tools instead of just shelling out to ``hermes kanban``?
 
 Humans continue to use the CLI (``hermes kanban …``), the dashboard
 (``hermes dashboard``), and the slash command (``/kanban …``) — all
-three bypass the agent entirely. The tools are ONLY for the worker
-agent's handoff back to the kernel.
+three bypass the agent entirely. The tools are for dispatcher-spawned
+worker handoffs and for configured orchestrator profiles that route work
+through the board.
 """
 from __future__ import annotations
 
@@ -110,6 +113,20 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _stamp_worker_session_metadata(
+    task_id: str, metadata: Optional[dict]
+) -> Optional[dict]:
+    """Add trusted worker session id metadata for this worker's own task."""
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return metadata
+    session_id = os.environ.get("HERMES_SESSION_ID")
+    if not session_id:
+        return metadata
+    stamped = dict(metadata or {})
+    stamped["worker_session_id"] = session_id
+    return stamped
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -223,6 +240,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "started_at": task.started_at,
         "completed_at": task.completed_at,
         "current_run_id": task.current_run_id,
+        "model_override": task.model_override,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -267,6 +285,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "completed_at": t.completed_at,
                     "result": t.result,
                     "current_run_id": t.current_run_id,
+                    "model_override": t.model_override,
                 }
 
             def _run_dict(r):
@@ -384,6 +403,7 @@ def _handle_complete(args: dict, **kw) -> str:
     metadata = args.get("metadata")
     result = args.get("result")
     created_cards = args.get("created_cards")
+    artifacts = args.get("artifacts")
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -397,6 +417,45 @@ def _handle_complete(args: dict, **kw) -> str:
         created_cards = [
             str(c).strip() for c in created_cards if str(c).strip()
         ]
+    if artifacts is not None:
+        if isinstance(artifacts, str):
+            # Accept a single path as a string for convenience.
+            artifacts = [artifacts]
+        if not isinstance(artifacts, (list, tuple)):
+            return tool_error(
+                f"artifacts must be a list of file paths, got "
+                f"{type(artifacts).__name__}"
+            )
+        artifacts = [
+            str(p).strip() for p in artifacts if str(p).strip()
+        ]
+        # Carry the artifact list inside metadata so it rides the
+        # existing completed-event payload without a schema change at
+        # the DB layer.  The gateway notifier reads payload['artifacts']
+        # off the completion event and uploads each path as a native
+        # attachment.
+        if artifacts:
+            if metadata is None:
+                metadata = {}
+            elif not isinstance(metadata, dict):
+                return tool_error(
+                    f"metadata must be an object/dict, got "
+                    f"{type(metadata).__name__}"
+                )
+            # Don't overwrite an existing metadata.artifacts the worker
+            # passed manually — merge instead.
+            existing = metadata.get("artifacts")
+            if isinstance(existing, (list, tuple)):
+                merged: list[str] = []
+                seen: set[str] = set()
+                for item in list(existing) + artifacts:
+                    s = str(item).strip()
+                    if s and s not in seen:
+                        seen.add(s)
+                        merged.append(s)
+                metadata["artifacts"] = merged
+            else:
+                metadata["artifacts"] = artifacts
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -405,6 +464,7 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -625,6 +685,10 @@ def _handle_create(args: dict, **kw) -> str:
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
+    # Stamp the originating session id when the agent loop runs under
+    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
+    # CLI / dashboard paths and on legacy hosts that don't set the env.
+    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
     workspace_kind = args.get("workspace_kind") or "scratch"
     workspace_path = args.get("workspace_path")
@@ -633,6 +697,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
+    initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -668,7 +733,9 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -841,7 +908,12 @@ KANBAN_COMPLETE_SCHEMA = {
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
-        "automation."
+        "automation. If you produced deliverable files (charts, PDFs, "
+        "spreadsheets, generated images), list their absolute paths "
+        "in ``artifacts`` — the gateway notifier will upload them as "
+        "native attachments to the human who subscribed to the task, "
+        "so the deliverable lands in their chat alongside the summary "
+        "instead of being a path they have to fetch by hand."
     ),
     "parameters": {
         "type": "object",
@@ -890,6 +962,25 @@ KANBAN_COMPLETE_SCHEMA = {
                     "``kanban_create`` call — do not invent or "
                     "remember ids from prose. Omit the field if you "
                     "did not create any cards."
+                ),
+            },
+            "artifacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of absolute paths to deliverable "
+                    "files you produced during this run — generated "
+                    "charts, PDFs, spreadsheets, images, archives. "
+                    "Examples: [\"/tmp/q3-revenue.png\", "
+                    "\"/tmp/report.pdf\"]. The gateway notifier "
+                    "uploads each path as a native attachment to the "
+                    "subscribed chat (images embed inline, everything "
+                    "else uploads as a file) so the deliverable "
+                    "lands with the completion notification. Skip "
+                    "intermediate scratch files and references that "
+                    "are not the deliverable. The path must exist "
+                    "on disk when the notifier runs; missing files "
+                    "are silently skipped."
                 ),
             },
             "board": _board_schema_prop(),
@@ -1081,6 +1172,16 @@ KANBAN_CREATE_SCHEMA = {
                     "Per-task runtime cap. When exceeded, the "
                     "dispatcher SIGTERMs the worker and re-queues the "
                     "task with outcome='timed_out'."
+                ),
+            },
+            "initial_status": {
+                "type": "string",
+                "enum": ["running", "blocked"],
+                "description": (
+                    "Initial card status. Use 'blocked' for tasks that "
+                    "require immediate human ops (R3 gate) to skip the "
+                    "brief running-to-blocked transition. Defaults to "
+                    "'running', which preserves the usual dispatch path."
                 ),
             },
             "skills": {

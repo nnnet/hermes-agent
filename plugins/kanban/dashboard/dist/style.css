@@ -63,13 +63,18 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  display: flex;
   gap: 0.75rem;
   align-items: start;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.hermes-kanban-columns::-webkit-scrollbar {
+  display: none;
 }
 
 .hermes-kanban-column {
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -297,8 +302,6 @@
 }
 .hermes-kanban-ago {
   margin-left: auto;
-  font-size: 0.85em;
-  white-space: nowrap;
 }
 
 /* ---- Inline create --------------------------------------------------- */
@@ -355,8 +358,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-.hermes-kanban-drawer-close,
-.hermes-kanban-drawer-collapse {
+.hermes-kanban-drawer-close {
   appearance: none;
   background: transparent;
   border: 0;
@@ -366,92 +368,7 @@
   cursor: pointer;
   padding: 0 0.25rem;
 }
-.hermes-kanban-drawer-close:hover,
-.hermes-kanban-drawer-collapse:hover { color: var(--color-foreground); }
-
-/* Drawer head right-side button cluster. Without explicit grouping the
- * close-button is space-between'd against the task id, leaving the
- * collapse button awkwardly mid-row; group them so both sit at the right. */
-.hermes-kanban-drawer-head .hermes-kanban-drawer-collapse {
-  margin-left: auto;
-}
-
-/* Collapsed-state handle — slim vertical strip pinned to the right edge
- * of the viewport. Acts as the restore affordance when the user has
- * dismissed the modal shade in favor of keeping the task pinned. */
-.hermes-kanban-drawer-handle {
-  position: fixed;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.35rem;
-  width: 1.75rem;
-  max-height: 60vh;
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  border-right: 0;
-  border-top-left-radius: var(--radius, 0.5rem);
-  border-bottom-left-radius: var(--radius, 0.5rem);
-  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.25);
-  color: var(--color-muted-foreground);
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.15s, color 0.15s, transform 0.15s;
-  animation: hermes-kanban-drawer-handle-in 160ms ease-out;
-}
-.hermes-kanban-drawer-handle:hover {
-  background: color-mix(in srgb, var(--color-card) 80%, var(--color-foreground) 20%);
-  color: var(--color-foreground);
-  transform: translateY(-50%) translateX(-2px);
-}
-.hermes-kanban-drawer-handle:focus-visible {
-  outline: 2px solid var(--color-ring, currentColor);
-  outline-offset: 2px;
-}
-
-@keyframes hermes-kanban-drawer-handle-in {
-  from { transform: translate(100%, -50%); opacity: 0; }
-  to   { transform: translate(0,    -50%); opacity: 1; }
-}
-
-.hermes-kanban-drawer-handle-close {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  font-size: 1rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  opacity: 0.5;
-}
-.hermes-kanban-drawer-handle-close:hover { opacity: 1; }
-
-.hermes-kanban-drawer-handle-chevron {
-  font-size: 1rem;
-  line-height: 1;
-  opacity: 0.7;
-}
-
-/* The task title runs vertically inside the strip — limited height so it
- * truncates rather than blowing past the strip's max-height bound. */
-.hermes-kanban-drawer-handle-title {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transform: rotate(180deg);
-  font-size: 0.72rem;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-height: 40vh;
-  white-space: nowrap;
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
+.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
 
 .hermes-kanban-drawer-body {
   flex: 1;
@@ -553,7 +470,6 @@
 .hermes-kanban-section-head {
   font-size: 0.72rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--color-muted-foreground);
 }
@@ -699,7 +615,6 @@
 }
 .hermes-kanban-deps-label {
   font-size: 0.68rem;
-  text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-muted-foreground);
   min-width: 4rem;
@@ -779,7 +694,6 @@
   border: 0;
   color: var(--color-muted-foreground);
   font-size: 0.7rem;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   cursor: pointer;
   padding: 0;
@@ -957,7 +871,6 @@
 .hermes-kanban-run-outcome {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--color-foreground);
 }
@@ -1017,7 +930,6 @@
 .hermes-kanban-run-meta-label {
   font-size: 0.65rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-muted-foreground);
   padding-bottom: 0.15rem;
@@ -1587,121 +1499,43 @@
   cursor: pointer;
 }
 
-/* ---- Card trash button + delete-confirm dialog ----------------------- */
+/* ---- Trash drop zone ------------------------------------------------- */
 
-/* Pinned to the far-right of the first card row via margin-left: auto.
- * Always RED so it's immediately recognisable as "destructive" — a grey
- * version proved too easy to overlook (user feedback). Bumps to a more
- * saturated red + scale + bg tint on hover/focus. */
-.hermes-kanban-trash-btn {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.4rem;
-  height: 1.4rem;
-  padding: 0;
-  border: 0;
-  border-radius: 0.25rem;
-  background: transparent;
-  color: var(--color-destructive, #d14a4a);
-  cursor: pointer;
-  opacity: 0.85;
-  transition: opacity 0.12s ease-out, color 0.12s, background 0.12s, transform 0.12s;
-}
-.hermes-kanban-trash-btn:focus-visible {
-  opacity: 1;
-  outline: 2px solid var(--color-destructive, #d14a4a);
-  outline-offset: 1px;
-}
-.hermes-kanban-trash-btn:hover {
-  opacity: 1;
-  color: var(--color-destructive, #d14a4a);
-  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 18%, transparent);
-  transform: scale(1.08);
-}
-
-/* Modal shade — fixed full-viewport overlay above everything, including
- * the kanban drawer (z-index 50) and the task drawer shade. */
-.hermes-kanban-confirm-shade {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, black 55%, transparent);
-  backdrop-filter: blur(2px);
-}
-
-.hermes-kanban-confirm-dialog {
-  max-width: 28rem;
-  width: calc(100% - 2rem);
-  background: var(--color-card, #fff);
-  color: var(--color-foreground);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius, 0.5rem);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
-  padding: 1.1rem 1.2rem 1rem;
+.hermes-kanban-trash {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-}
-
-.hermes-kanban-confirm-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--color-foreground);
-}
-
-.hermes-kanban-confirm-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  font-size: 0.85rem;
-  line-height: 1.45;
-  color: var(--color-muted-foreground);
-}
-
-.hermes-kanban-confirm-target {
-  padding: 0.35rem 0.6rem;
-  background: color-mix(in srgb, var(--color-card-subtle, var(--color-card)) 100%, transparent);
-  border: 1px solid var(--color-border);
-  border-radius: calc(var(--radius, 0.5rem) - 0.2rem);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.78rem;
-  color: var(--color-foreground);
-  word-break: break-word;
-}
-
-.hermes-kanban-confirm-skip {
-  display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  font-size: 0.78rem;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
   color: var(--color-muted-foreground);
-  cursor: pointer;
+  font-size: 0.75rem;
+  min-height: 80px;
+  opacity: 0.5;
+  transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
   user-select: none;
-}
-.hermes-kanban-confirm-skip input[type="checkbox"] {
-  cursor: pointer;
+  pointer-events: none;
 }
 
-.hermes-kanban-confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
+.hermes-kanban-trash--active {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-/* The destructive "Delete" button uses the same shadcn Button base as
- * the rest of the plugin; this class just paints the destructive tint
- * on top so we don't have to rely on a SDK variant that may not exist
- * across host versions. */
-.hermes-kanban-confirm-delete-btn {
-  background: var(--color-destructive, #d14a4a) !important;
-  color: white !important;
-  border-color: var(--color-destructive, #d14a4a) !important;
+.hermes-kanban-trash--drop {
+  border-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, var(--color-card));
+  color: var(--color-destructive, #d14a4a);
 }
-.hermes-kanban-confirm-delete-btn:hover {
-  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 88%, black) !important;
+
+.hermes-kanban-trash-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.hermes-kanban-trash-label {
+  font-weight: 500;
 }
