@@ -1063,20 +1063,6 @@
     // the main board view stays the focus.
     const [showArchive, setShowArchive] = useState(false);
 
-   const deleteTask = useCallback(function (taskId) {
-     if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
-     return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
-       method: "DELETE",
-     }).then(function () {
-       loadBoard();
-       setSelectedIds(function (prev) {
-         const next = new Set(prev);
-         next.delete(taskId);
-         return next;
-       });
-     }).catch(function (e) { setError(String(e.message || e)); });
-   }, [board, loadBoard, t]);
-
     const deleteSelected = useCallback(function (count) {
       if (selectedIds.size === 0) return Promise.resolve();
       if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
