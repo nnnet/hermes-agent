@@ -68,6 +68,12 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
+    # Chief read-only status — safe to expose in core so cron jobs created
+    # against running chiefs can verify state without forcing the operator
+    # to declare ``enabled_toolsets: [kanban]`` per job. State-changing
+    # chief lifecycle (``chief_spawn`` / ``chief_terminate``) stays in the
+    # PM-tier ``kanban`` toolset.
+    "chief_status",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
