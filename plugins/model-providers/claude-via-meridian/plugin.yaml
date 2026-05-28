@@ -1,0 +1,5 @@
+name: claude-via-meridian-provider
+kind: model-provider
+version: 1.0.0
+description: Anthropic Messages protocol against host Meridian proxy (127.0.0.1:3456)
+author: nnnet/AiManager
