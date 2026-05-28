@@ -1330,6 +1330,29 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # anyway so static analyzers can see the containment guarantee.
     if candidate.parent != parent:
         return None
+    # Dedupe: if any existing ``<base_name>.corrupt.*.bak`` in ``parent``
+    # has the same content as ``resolved``, return that one instead of
+    # writing yet another copy. Prevents the dispatcher tick from filling
+    # the board dir with thousands of identical copies while the corrupt
+    # DB sits there awaiting human intervention.
+    try:
+        import hashlib
+        src_size = resolved.stat().st_size
+        src_hash = None
+        for existing in parent.glob(f"{base_name}.corrupt.*.bak"):
+            try:
+                if existing.stat().st_size != src_size:
+                    continue
+            except OSError:
+                continue
+            if src_hash is None:
+                with resolved.open("rb") as f:
+                    src_hash = hashlib.sha256(f.read()).hexdigest()
+            with existing.open("rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() == src_hash:
+                    return existing
+    except OSError:
+        pass
     counter = 0
     while candidate.exists():
         counter += 1
