@@ -62,6 +62,31 @@ jobs:
       - name: Fetch main
         run: git fetch origin main:main
 
+      - name: Bootstrap rerere from past merges
+        # Cross-run cache restores resolutions only when previous runs
+        # COMPLETED merges and saved the cache. Conflict runs abort the
+        # merge → no postimage gets stored → cache stays empty for that
+        # conflict pattern. To survive fresh runners and recover from
+        # cache misses, rebuild rerere from the last N first-parent
+        # merges on prod. ``git rerere train`` replays each merge in a
+        # detached HEAD, captures the conflict, applies the stored
+        # resolution, and writes both preimage and postimage to
+        # .git/rr-cache. Idempotent: if a resolution is already present,
+        # train is a no-op.
+        run: |
+          set -eu
+          if ! git help -a 2>/dev/null | grep -qw rerere; then
+            echo "::warning::git rerere not available — skipping bootstrap"
+            exit 0
+          fi
+          trained=0
+          for sha in $(git log --merges --first-parent -25 --pretty=format:'%H'); do
+            if git rerere train "$sha" >/dev/null 2>&1; then
+              trained=$((trained+1))
+            fi
+          done
+          echo "::notice::rerere train: bootstrapped $trained merge resolutions"
+
       - name: Check if main has new commits
         id: gate
         run: |
