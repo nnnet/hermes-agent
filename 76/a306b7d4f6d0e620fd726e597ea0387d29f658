@@ -1,0 +1,9 @@
+hermes_cli/web_server.py
+  s_e5369d415d379b::t_1a60e66ae3baaf 4269-4281,4286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "76a306b7d4f6d0e620fd726e597ea0387d29f658",
+  "prompts": {}
+}
