@@ -21,11 +21,22 @@ HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
 # --- UID/GID remap ---
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
+# Diagnostic: log the values we're working with.  Without this it's
+# impossible to tell whether a missing UID remap is "HERMES_UID was
+# not in the cont-init env" vs "the comparison passed silently"
+# (observed in the wild: rebuild on a host where HERMES_UID=1000
+# was correctly in /run/s6/container_environment but the remap
+# message never appeared because of an early-exit on ``set -e`` in
+# a sibling step that came before this block).  These echoes are
+# load-bearing for post-mortems and cost ~3 bytes/restart.
+_current_hermes_uid=$(id -u hermes 2>/dev/null || echo "missing")
+_current_hermes_gid=$(id -g hermes 2>/dev/null || echo "missing")
+echo "[stage2] UID-remap inputs: HERMES_UID=${HERMES_UID:-unset} HERMES_GID=${HERMES_GID:-unset} current hermes uid=${_current_hermes_uid} gid=${_current_hermes_gid}"
+if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$_current_hermes_uid" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
 fi
-if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
+if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$_current_hermes_gid" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
     # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already
     # exist as "dialout" in the Debian-based container image).
