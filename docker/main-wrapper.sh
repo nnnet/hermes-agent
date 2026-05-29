@@ -1,8 +1,20 @@
-#!/bin/sh
+#!/command/with-contenv sh
 # /opt/hermes/docker/main-wrapper.sh — wraps the container's CMD with
 # the same argument-routing logic the pre-s6 entrypoint.sh used. Runs
 # as /init's "main program" (Docker CMD) so it inherits stdin/stdout/
 # stderr from the container.
+#
+# IMPORTANT — the shebang MUST be ``#!/command/with-contenv sh`` (NOT
+# bare ``#!/bin/sh``).  s6-overlay stores container env vars (those
+# populated by Docker's ``env_file:`` / ``environment:`` blocks) into
+# /run/s6/container_environment/<NAME> files, not into PID 1's actual
+# environ.  Plain ``sh`` inherits PID 1's environ → minimal env (just
+# PATH + a couple of basics).  The ``with-contenv`` wrapper reads those
+# files first, then execs sh with the full env applied, so the gateway
+# process actually sees TELEGRAM_BOT_TOKEN, HERMES_HOME, OPENAI_API_KEY
+# etc.  Without this, the gateway logs "No messaging platforms enabled"
+# at boot and the bot never connects, even though the env_file is loaded
+# and visible via ``docker exec hermes printenv``.
 #
 # Routing:
 #   no args                       → exec `hermes` (the default)
@@ -12,6 +24,15 @@
 # We drop to the hermes user via `s6-setuidgid` so the supervised
 # workload runs unprivileged (UID 10000 by default).
 set -e
+
+# Pin HOME to the hermes user's actual home dir so libraries that
+# expand ``~`` / ``$HOME`` (notably the gateway's per-bot-token lock
+# file at $HOME/.local/state/hermes/gateway-locks/) write into the
+# bind-mounted .hermes home and not into PID 1's leaked /root path.
+# Without this the gateway dies on TG connect with:
+#   PermissionError: [Errno 13] Permission denied:
+#   '/root/.local/state/hermes/gateway-locks/telegram-bot-token-*.lock'
+export HOME=/home/hermes
 
 cd /opt/data
 # shellcheck disable=SC1091
