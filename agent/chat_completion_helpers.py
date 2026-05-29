@@ -1002,10 +1002,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # First honour the explicit api_mode from the fallback config entry —
+        # without this, providers like claude-via-meridian (Meridian on
+        # 127.0.0.1:3456) get routed to /chat/completions and return 404 even
+        # though the YAML clearly says ``api_mode: anthropic_messages``.
+        _explicit_fb_api_mode = (fb.get("api_mode") or "").strip().lower()
+        if _explicit_fb_api_mode in ("anthropic_messages", "chat_completions", "codex_responses", "bedrock_converse"):
+            fb_api_mode = _explicit_fb_api_mode
+        else:
+            fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if _explicit_fb_api_mode:
+            pass  # explicit wins
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"

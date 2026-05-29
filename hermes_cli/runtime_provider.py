@@ -97,6 +97,12 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
+    # Local Meridian proxy (claude-via-meridian / claude-agent-sdk plugins)
+    # exposes Anthropic Messages protocol on host 127.0.0.1:3456 — without
+    # this hint /model --global resets api_mode, falls back to chat
+    # completions and gets HTTP 404 from Meridian.
+    if hostname in ("127.0.0.1", "localhost") and ":3456" in normalized:
+        return "anthropic_messages"
     return None
 
 

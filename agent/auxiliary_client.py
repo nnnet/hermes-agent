@@ -3631,36 +3631,27 @@ def resolve_provider_client(
     # (compression, title_generation, session_search, skills_hub,
     # approval, mcp, triage_specifier, curator, vision, web_extract).
     if provider == "claude-agent-sdk":
-        # Verify the SDK is importable up front so misconfiguration
-        # surfaces here (with the install hint) rather than per-call.
-        try:
-            import claude_agent_sdk  # noqa: F401 — presence check  # type: ignore[import-not-found]
-        except ImportError:
-            logger.warning(
-                "resolve_provider_client: provider 'claude-agent-sdk' "
-                "requested but claude_agent_sdk is not installed.  "
-                "Install with: pip install 'hermes-agent[claude-agent-sdk]'"
-            )
-            return None, None
-
+        # nnnet/AiManager fork (2026-05-29): the upstream branch spawns
+        # the `claude` CLI as a subprocess via the python `claude_agent_sdk`
+        # package. Inside our docker container that CLI works only
+        # interactively (loops on sandbox-warning, never streams), and
+        # `claude_agent_sdk.query()` therefore returns
+        # ``Connection error``. We instead route this provider over plain
+        # HTTP to host Meridian (127.0.0.1:3456) — same OAuth subscription
+        # auth, just no subprocess. The ProviderProfile already carries
+        # the right base_url and api_mode, so falling through to the
+        # generic api_key branch below builds a normal AsyncAnthropic
+        # client pointed at Meridian.
         try:
             from providers import get_provider_profile as _gpf_cas
             _cas_profile = _gpf_cas("claude-agent-sdk")
-            default_model = (
-                getattr(_cas_profile, "default_aux_model", None)
-                or "claude-haiku-4-5"
-            )
+            if _cas_profile is not None:
+                explicit_base_url = explicit_base_url or _cas_profile.base_url
+                if not explicit_api_key:
+                    explicit_api_key = "not-needed"
+                provider = "anthropic_custom"  # reuse the http path
         except Exception:
-            default_model = "claude-haiku-4-5"
-
-        final_model = _normalize_resolved_model(model or default_model, provider)
-        client = ClaudeAgentSdkAuxiliaryClient(final_model)
-        logger.debug(
-            "resolve_provider_client: claude-agent-sdk (%s) — host CLI auth",
-            final_model,
-        )
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
+            pass
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":

@@ -98,6 +98,47 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Active-runtime identity — single source of truth for "what am I running
+    # on" questions. Without this, the agent answers from conversation memory
+    # (session DB / hindsight recall) and reproduces stale provider names from
+    # earlier sessions after the operator switches providers. Placed right
+    # after SOUL.md/identity so the model's strong-attention prefix region
+    # contains the authoritative line, ahead of any tool/skill text that
+    # might reference historical config in passing.
+    _identity_bits = []
+    if getattr(agent, "model", ""):
+        _identity_bits.append(f"model={agent.model}")
+    if getattr(agent, "provider", ""):
+        _identity_bits.append(f"provider={agent.provider}")
+    if getattr(agent, "base_url", ""):
+        _identity_bits.append(f"base_url={agent.base_url}")
+    if _identity_bits:
+        _identity_line = (
+            "## CURRENT ACTIVE RUNTIME (authoritative)\n\n"
+            + "\n".join(f"- {b}" for b in _identity_bits)
+            + "\n\n"
+            "This block is the ONLY source of truth for the agent's current "
+            "model, provider, and inference base URL. When asked anything about "
+            "infrastructure, what you are running on, what provider/model is in "
+            "use, или \"что у тебя под капотом\" — quote these values exactly. "
+            "Conversation memory, hindsight recall, prior session notes, and "
+            "anything reproduced from training data MUST NOT override this block. "
+            "If any stored note mentions a different provider name (for example "
+            "`anthropic_custom`, `anthropic-custom`, `clr-gateway`, "
+            "`claude-agent-sdk`, `openai`, `openrouter`), that note is STALE — "
+            "ignore it and report the values above. This block is regenerated "
+            "from live config on every fresh system-prompt build; trust it."
+        )
+        stable_parts.append(_identity_line)
+        try:
+            import logging as _l
+            _l.getLogger("agent.system_prompt").warning(
+                "ACTIVE_RUNTIME_INJECTED session=%s bits=%s",
+                getattr(agent, "session_id", "?"), _identity_bits,
+            )
+        except Exception:
+            pass
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

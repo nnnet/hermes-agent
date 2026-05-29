@@ -47,7 +47,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
-        extra_env_vars=("OPENAI_API_KEY",),
+        extra_env_vars=("OPENROUTER_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -291,8 +291,11 @@ class ProviderDef:
 # Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
-    # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
+    # NOTE: upstream maps "openai" → "openrouter" (routes through aggregator).
+    # We override: route bare "openai" to "openai-api" so picking the picker's
+    # "OpenAI" entry hits api.openai.com directly with OPENAI_API_KEY, instead
+    # of falling through to OpenRouter (which needs OPENROUTER_API_KEY).
+    "openai": "openai-api",
 
     # zai
     "glm": "zai",
