@@ -40,20 +40,36 @@ INSTALL_DIR="/opt/hermes"
 # cont-init runs (Docker mounts volumes before /init starts) and is
 # the same single-source-of-truth the operator uses for every other
 # tunable.  Idempotent: if HERMES_UID is already set in env, we keep it.
-if [ -z "${HERMES_UID:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
-    _env_uid=$(grep -E '^HERMES_UID=' "$HERMES_HOME/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
-    if [ -n "$_env_uid" ]; then
-        HERMES_UID="$_env_uid"
-        echo "[stage2] Backfilled HERMES_UID=$HERMES_UID from $HERMES_HOME/.env"
+# Candidate .env paths. The first hit wins.  HERMES_HOME itself may be
+# empty in stage2 (same s6-overlay env-propagation bug that misses
+# HERMES_UID), so we don't trust the env-derived path alone.  Upstream
+# compose maps the host ``.hermes`` dir to ``/home/hermes/.hermes`` —
+# that's the most reliable target in a default deployment.  /opt/data
+# was the pre-2026-05 mount target and stays as a fallback for hosts
+# that still pin it that way.
+for _env_candidate in \
+    "$HERMES_HOME/.env" \
+    "/home/hermes/.hermes/.env" \
+    "/opt/data/.env" \
+; do
+    [ -f "$_env_candidate" ] || continue
+    if [ -z "${HERMES_UID:-}" ]; then
+        _env_uid=$(grep -E '^HERMES_UID=' "$_env_candidate" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+        if [ -n "$_env_uid" ]; then
+            HERMES_UID="$_env_uid"
+            echo "[stage2] Backfilled HERMES_UID=$HERMES_UID from $_env_candidate"
+        fi
     fi
-fi
-if [ -z "${HERMES_GID:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
-    _env_gid=$(grep -E '^HERMES_GID=' "$HERMES_HOME/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
-    if [ -n "$_env_gid" ]; then
-        HERMES_GID="$_env_gid"
-        echo "[stage2] Backfilled HERMES_GID=$HERMES_GID from $HERMES_HOME/.env"
+    if [ -z "${HERMES_GID:-}" ]; then
+        _env_gid=$(grep -E '^HERMES_GID=' "$_env_candidate" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+        if [ -n "$_env_gid" ]; then
+            HERMES_GID="$_env_gid"
+            echo "[stage2] Backfilled HERMES_GID=$HERMES_GID from $_env_candidate"
+        fi
     fi
-fi
+    # Both filled — no need to keep scanning.
+    [ -n "${HERMES_UID:-}" ] && [ -n "${HERMES_GID:-}" ] && break
+done
 
 # --- UID/GID remap ---
 # Diagnostic: log the values we're working with.  Without this it's
