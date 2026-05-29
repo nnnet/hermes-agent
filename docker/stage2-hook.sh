@@ -20,6 +20,41 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# --- Backfill HERMES_UID / HERMES_GID from $HERMES_HOME/.env ---
+# s6-overlay v3 does NOT auto-propagate the container's env_file vars
+# into /run/s6/container_environment/ for cont-init.d on every base
+# image / runtime combination — observed empirically on debian:13.4 +
+# s6-overlay 3.2.3.0 + docker compose 2.x with the upstream-shipped
+# compose:
+#     environment:
+#       - HERMES_UID=${HERMES_UID:-10000}
+#       - HERMES_GID=${HERMES_GID:-10000}
+# ``docker exec hermes printenv HERMES_UID`` correctly shows 1000 at
+# runtime, but with-contenv in cont-init.d evaluates ``${HERMES_UID:-}``
+# to empty.  Result: the UID-remap if-check below silently skips, the
+# hermes user stays at the image default uid 10000, and the bind-mounted
+# ``.hermes`` volume (host-owned uid 1000) hits EACCES on every read.
+#
+# Fall back to grepping HERMES_UID / HERMES_GID directly from
+# ``$HERMES_HOME/.env`` — the bind-mounted file is available before
+# cont-init runs (Docker mounts volumes before /init starts) and is
+# the same single-source-of-truth the operator uses for every other
+# tunable.  Idempotent: if HERMES_UID is already set in env, we keep it.
+if [ -z "${HERMES_UID:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
+    _env_uid=$(grep -E '^HERMES_UID=' "$HERMES_HOME/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+    if [ -n "$_env_uid" ]; then
+        HERMES_UID="$_env_uid"
+        echo "[stage2] Backfilled HERMES_UID=$HERMES_UID from $HERMES_HOME/.env"
+    fi
+fi
+if [ -z "${HERMES_GID:-}" ] && [ -f "$HERMES_HOME/.env" ]; then
+    _env_gid=$(grep -E '^HERMES_GID=' "$HERMES_HOME/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+    if [ -n "$_env_gid" ]; then
+        HERMES_GID="$_env_gid"
+        echo "[stage2] Backfilled HERMES_GID=$HERMES_GID from $HERMES_HOME/.env"
+    fi
+fi
+
 # --- UID/GID remap ---
 # Diagnostic: log the values we're working with.  Without this it's
 # impossible to tell whether a missing UID remap is "HERMES_UID was
