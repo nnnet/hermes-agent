@@ -129,6 +129,22 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def resolve_runtime_model(self, model: str, **context: Any) -> str:
+        """Map a picker-level model name to the actual id sent to the API.
+
+        Default: return ``model`` unchanged.  Override in subclasses that
+        expose a stable pseudo-name in ``fetch_models()`` but route to a
+        rotating real catalog id at request time (e.g. ``openrouter_custom``
+        keeps a state.json with the current best free id picked by cron).
+
+        Called once at session start, after the agent's primary model has
+        been pinned but before the first LLM call.  ``context`` typically
+        carries ``session_id``; signatures may be extended in future to
+        pass agent metadata, but plugins should accept ``**context`` for
+        forward-compat.
+        """
+        return model
+
     def fetch_models(
         self,
         *,

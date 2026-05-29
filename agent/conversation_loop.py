@@ -199,6 +199,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
+    # NOTE: resolve_runtime_model is invoked in agent_init right after the
+    # provider-level normalize_model_for_provider() pass, so by the time we
+    # reach this code path agent.model is already the real catalog id even
+    # for continuation sessions (where this conversation-loop block returns
+    # early at line 183).
+
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).

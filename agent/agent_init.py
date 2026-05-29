@@ -340,6 +340,30 @@ def init_agent(
     except Exception:
         pass
 
+    # ProviderProfile.resolve_runtime_model hook — gives plugins a chance
+    # to swap a stable picker-level pseudo-name for the actual catalog id
+    # before any downstream code (LLM client construction, prompt-cache
+    # bookkeeping, fallback chain) reads agent.model. Runs every turn
+    # because the gateway builds a fresh AIAgent per inbound message.
+    # Default profile method is identity, so this is a no-op outside the
+    # handful of plugins that surface masked aliases (e.g. openrouter_custom
+    # routing "best-free" to the current best :free OR id).
+    try:
+        from providers import get_provider_profile as _gpf_rtm
+        _rt_profile = _gpf_rtm(getattr(agent, "provider", "") or "")
+        if _rt_profile is not None:
+            _resolved_model = _rt_profile.resolve_runtime_model(
+                agent.model, session_id=getattr(agent, "session_id", "")
+            )
+            if _resolved_model and _resolved_model != agent.model:
+                logger.info(
+                    "ProviderProfile.resolve_runtime_model: %s -> %s (provider=%s)",
+                    agent.model, _resolved_model, agent.provider,
+                )
+                agent.model = _resolved_model
+    except Exception as exc:
+        logger.warning("resolve_runtime_model failed: %s", exc)
+
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
     # uses chat completions). Also auto-upgrade for direct OpenAI URLs
