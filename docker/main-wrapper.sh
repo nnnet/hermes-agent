@@ -28,11 +28,14 @@ set -e
 # Pin HOME to the hermes user's actual home dir so libraries that
 # expand ``~`` / ``$HOME`` (notably the gateway's per-bot-token lock
 # file at $HOME/.local/state/hermes/gateway-locks/) write into the
-# bind-mounted .hermes home and not into PID 1's leaked /root path.
+# bind-mounted data dir and not into PID 1's leaked /root path.
 # Without this the gateway dies on TG connect with:
 #   PermissionError: [Errno 13] Permission denied:
 #   '/root/.local/state/hermes/gateway-locks/telegram-bot-token-*.lock'
-export HOME=/home/hermes
+# Dockerfile creates hermes with useradd -u 10000 -m -d /opt/data,
+# so /opt/data is the canonical home (and the bind-mount target for
+# host's .hermes state dir).
+export HOME=/opt/data
 
 cd /opt/data
 # shellcheck disable=SC1091
