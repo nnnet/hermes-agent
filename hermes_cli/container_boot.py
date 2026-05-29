@@ -89,21 +89,36 @@ def reconcile_profile_gateways(
     """
     actions: list[ReconcileAction] = []
 
-    # Default profile — always register, even if nothing has ever
-    # populated the root profile dir. The slot exists so
-    # ``hermes gateway start`` (no ``-p``) has somewhere to land;
-    # auto-up only when the prior state was "running" (same rule as
-    # named profiles).
-    default_prior_state = _read_prior_state(hermes_home)
-    default_should_start = default_prior_state in _AUTOSTART_STATES
-    if not dry_run:
-        _cleanup_stale_runtime_files(hermes_home)
-        _register_service(scandir, "default", start=default_should_start)
-    actions.append(ReconcileAction(
-        profile="default",
-        prior_state=default_prior_state,
-        action="started" if default_should_start else "registered",
-    ))
+    # Local fork: HERMES_BOOT_RECONCILE env knob lets a sidecar container
+    # (e.g. hermes-dashboard) share the same image without spawning
+    # duplicate s6 gateway services that would collide on bind-locks and
+    # port 8642 with the primary gateway container.
+    #   "off"         — skip everything (sidecar / dashboard container)
+    #   "named-only"  — skip the default slot but still register named
+    #                   profiles (use when CMD=["gateway","run"] already
+    #                   runs the default profile as /init's main program)
+    #   unset / "all" — upstream behavior
+    reconcile_mode = os.environ.get("HERMES_BOOT_RECONCILE", "all").lower()
+    if reconcile_mode == "off":
+        log.info("HERMES_BOOT_RECONCILE=off — skipping all profile reconciliation")
+        return actions
+
+    if reconcile_mode != "named-only":
+        # Default profile — always register, even if nothing has ever
+        # populated the root profile dir. The slot exists so
+        # ``hermes gateway start`` (no ``-p``) has somewhere to land;
+        # auto-up only when the prior state was "running" (same rule as
+        # named profiles).
+        default_prior_state = _read_prior_state(hermes_home)
+        default_should_start = default_prior_state in _AUTOSTART_STATES
+        if not dry_run:
+            _cleanup_stale_runtime_files(hermes_home)
+            _register_service(scandir, "default", start=default_should_start)
+        actions.append(ReconcileAction(
+            profile="default",
+            prior_state=default_prior_state,
+            action="started" if default_should_start else "registered",
+        ))
 
     profiles_root = hermes_home / "profiles"
     if profiles_root.is_dir():

@@ -38,6 +38,14 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      # Local fork: pin HOME so s6-supervised services (including the
+      # default-profile gateway spawned by cont-init.d/02-reconcile-profiles)
+      # write lock files into the bind-mounted volume rather than the
+      # leaked /root that PID 1 inherits from Docker.
+      - HOME=/opt/data
+      # Local fork: gateway container's CMD already runs the default
+      # profile; skip the duplicate s6 slot or both would race on port 8642.
+      - HERMES_BOOT_RECONCILE=named-only
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0
@@ -72,5 +80,11 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
+      # Local fork: HOME pin (same reason as the gateway service above).
+      - HOME=/opt/data
+      # Local fork: dashboard sidecar must NOT spawn s6 gateway services —
+      # those run in the primary gateway container; spawning here would
+      # produce s6-log lock collisions on the shared bind mount.
+      - HERMES_BOOT_RECONCILE=off
     # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
     command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
