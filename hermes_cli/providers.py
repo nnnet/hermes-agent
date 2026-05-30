@@ -47,7 +47,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
-        extra_env_vars=("OPENAI_API_KEY",),
+        extra_env_vars=("OPENROUTER_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -215,6 +215,54 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
 }
 
 
+# Auto-extend HERMES_OVERLAYS with any provider registered by a
+# plugins/model-providers/<name>/ plugin that is not already declared
+# above. Without this, get_provider() returns None for plugin-only
+# providers, which makes them unreachable from /model and the picker
+# even though they show up in the picker's provider list (which uses
+# the separate CANONICAL_PROVIDERS registry).
+def _api_mode_to_transport(api_mode: str) -> str:
+    """Map ProviderProfile.api_mode → HermesOverlay.transport."""
+    if not api_mode:
+        return "openai_chat"
+    if api_mode == "anthropic_messages":
+        return "anthropic_messages"
+    if api_mode == "codex_responses":
+        return "codex_responses"
+    if api_mode == "bedrock_converse":
+        return "bedrock_converse"
+    # claude_agent_sdk_single_turn and any other custom transport keep
+    # their api_mode string verbatim — downstream resolvers dispatch on it.
+    return api_mode
+
+
+_PLUGIN_INJECTED_OVERLAYS: set = set()
+
+try:
+    from providers import list_providers as _list_providers_for_overlays
+    for _pp in _list_providers_for_overlays():
+        if _pp.name in HERMES_OVERLAYS:
+            continue
+        _extra_env = tuple(
+            v for v in _pp.env_vars
+            if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+        )
+        _bu_env = next(
+            (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+            "",
+        )
+        HERMES_OVERLAYS[_pp.name] = HermesOverlay(
+            transport=_api_mode_to_transport(_pp.api_mode),
+            auth_type=_pp.auth_type or "api_key",
+            extra_env_vars=_extra_env,
+            base_url_override=_pp.base_url or "",
+            base_url_env_var=_bu_env,
+        )
+        _PLUGIN_INJECTED_OVERLAYS.add(_pp.name)
+except Exception:
+    pass
+
+
 # -- Resolved provider -------------------------------------------------------
 # The merged result of models.dev + overlay + user config.
 
@@ -239,8 +287,11 @@ class ProviderDef:
 # Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
-    # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
+    # NOTE: upstream maps "openai" → "openrouter" (routes through aggregator).
+    # We override: route bare "openai" to "openai-api" so picking the picker's
+    # "OpenAI" entry hits api.openai.com directly with OPENAI_API_KEY, instead
+    # of falling through to OpenRouter (which needs OPENROUTER_API_KEY).
+    "openai": "openai-api",
 
     # zai
     "glm": "zai",
@@ -380,6 +431,18 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
+# Carry plugin display_names into _LABEL_OVERRIDES so the picker
+# shows the friendly label (e.g. "Anthropic-custom", "Claude Agent
+# SDK") instead of the bare slug. Falls back silently when the plugin
+# registry isn't ready yet.
+try:
+    from providers import list_providers as _list_providers_for_labels
+    for _pp_lbl in _list_providers_for_labels():
+        if _pp_lbl.display_name and _pp_lbl.name not in _LABEL_OVERRIDES:
+            _LABEL_OVERRIDES[_pp_lbl.name] = _pp_lbl.display_name
+except Exception:
+    pass
+
 
 # -- Transport → API mode mapping ---------------------------------------------
 
@@ -388,6 +451,9 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    # claude-agent-sdk transport ⇒ same api_mode string. The runtime
+    # resolver and agent_init.py both branch on this value.
+    "claude_agent_sdk_single_turn": "claude_agent_sdk_single_turn",
 }
 
 

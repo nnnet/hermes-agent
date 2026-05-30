@@ -788,7 +788,25 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": (
+                    "Optional list of toolset names. Two purposes:\n"
+                    "  1. Restrict the job to a smaller toolset to reduce input token overhead — e.g. "
+                    "[\"web\"] for a search-only job, [\"terminal\", \"file\"] for a file-ops job.\n"
+                    "  2. ADD a toolset the default cron toolset does NOT carry — most notably the "
+                    "`kanban` toolset, which provides `kanban_*` AND the orchestrator tools "
+                    "`chief_spawn` / `chief_list` / `chief_terminate` / `mc_*` / `workflow_*`. "
+                    "If the job's prompt asks the agent to interact with chiefs (spawn/terminate) "
+                    "or Mission Control pipelines, pass `enabled_toolsets: [\"kanban\"]` — "
+                    "otherwise those tools are not in the schema and the agent will report "
+                    "\"tool not found\". Note: `chief_status` is in the default cron toolset "
+                    "(read-only), so plain status checks don't need this opt-in. "
+                    "Inference hints: use \"web\" for web_search/web_extract, \"terminal\" for shell, "
+                    "\"file\" for read_file/write_file/patch, \"delegation\" for delegate_task, "
+                    "\"kanban\" for any chief/mc/kanban/workflow tool beyond read-only chief_status. "
+                    "When omitted, the cron job runs with the platform default cron toolset "
+                    "(NOT all tools — kanban/mc/chief lifecycle is gated out by default). "
+                    "On update, pass an empty array to clear."
+                ),
             },
             "workdir": {
                 "type": "string",

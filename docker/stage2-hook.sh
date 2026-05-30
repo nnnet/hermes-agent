@@ -24,13 +24,59 @@ INSTALL_DIR="/opt/hermes"
 # Create the directory (and any missing parents) while we still have root
 # privileges so the chown checks below see real metadata and the later
 # `s6-setuidgid hermes mkdir -p` block doesn't EACCES on root-owned
-# ancestors. Without this, custom HERMES_HOME paths whose parents only
-# root can create (e.g. `HERMES_HOME=/home/hermes/.hermes` in a Compose
-# file, or any path under a fresh / not pre-populated by the image)
-# fail on first boot with `mkdir: cannot create directory '/...': Permission
-# denied` and the cont-init hook exits non-zero. Idempotent — `mkdir -p`
-# is a no-op if the dir already exists. (#18482, salvages #18488)
+# ancestors. (upstream #18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
+
+# --- Backfill HERMES_UID / HERMES_GID from $HERMES_HOME/.env ---
+# s6-overlay v3 does NOT auto-propagate the container's env_file vars
+# into /run/s6/container_environment/ for cont-init.d on every base
+# image / runtime combination — observed empirically on debian:13.4 +
+# s6-overlay 3.2.3.0 + docker compose 2.x with the upstream-shipped
+# compose:
+#     environment:
+#       - HERMES_UID=${HERMES_UID:-10000}
+#       - HERMES_GID=${HERMES_GID:-10000}
+# ``docker exec hermes printenv HERMES_UID`` correctly shows 1000 at
+# runtime, but with-contenv in cont-init.d evaluates ``${HERMES_UID:-}``
+# to empty.  Result: the UID-remap if-check below silently skips, the
+# hermes user stays at the image default uid 10000, and the bind-mounted
+# ``.hermes`` volume (host-owned uid 1000) hits EACCES on every read.
+#
+# Fall back to grepping HERMES_UID / HERMES_GID directly from
+# ``$HERMES_HOME/.env`` — the bind-mounted file is available before
+# cont-init runs (Docker mounts volumes before /init starts) and is
+# the same single-source-of-truth the operator uses for every other
+# tunable.  Idempotent: if HERMES_UID is already set in env, we keep it.
+# Candidate .env paths. The first hit wins.  HERMES_HOME itself may be
+# empty in stage2 (same s6-overlay env-propagation bug that misses
+# HERMES_UID), so we don't trust the env-derived path alone.  Upstream
+# compose maps the host ``.hermes`` dir to ``/home/hermes/.hermes`` —
+# that's the most reliable target in a default deployment.  /opt/data
+# was the pre-2026-05 mount target and stays as a fallback for hosts
+# that still pin it that way.
+for _env_candidate in \
+    "$HERMES_HOME/.env" \
+    "/home/hermes/.hermes/.env" \
+    "/opt/data/.env" \
+; do
+    [ -f "$_env_candidate" ] || continue
+    if [ -z "${HERMES_UID:-}" ]; then
+        _env_uid=$(grep -E '^HERMES_UID=' "$_env_candidate" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+        if [ -n "$_env_uid" ]; then
+            HERMES_UID="$_env_uid"
+            echo "[stage2] Backfilled HERMES_UID=$HERMES_UID from $_env_candidate"
+        fi
+    fi
+    if [ -z "${HERMES_GID:-}" ]; then
+        _env_gid=$(grep -E '^HERMES_GID=' "$_env_candidate" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' "')
+        if [ -n "$_env_gid" ]; then
+            HERMES_GID="$_env_gid"
+            echo "[stage2] Backfilled HERMES_GID=$HERMES_GID from $_env_candidate"
+        fi
+    fi
+    # Both filled — no need to keep scanning.
+    [ -n "${HERMES_UID:-}" ] && [ -n "${HERMES_GID:-}" ] && break
+done
 
 # --- UID/GID remap ---
 # Accept PUID/PGID as aliases for HERMES_UID/HERMES_GID.  NAS users (UGOS,
@@ -42,11 +88,22 @@ mkdir -p "$HERMES_HOME"
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
+# Diagnostic: log the values we're working with.  Without this it's
+# impossible to tell whether a missing UID remap is "HERMES_UID was
+# not in the cont-init env" vs "the comparison passed silently"
+# (observed in the wild: rebuild on a host where HERMES_UID=1000
+# was correctly in /run/s6/container_environment but the remap
+# message never appeared because of an early-exit on ``set -e`` in
+# a sibling step that came before this block).  These echoes are
+# load-bearing for post-mortems and cost ~3 bytes/restart.
+_current_hermes_uid=$(id -u hermes 2>/dev/null || echo "missing")
+_current_hermes_gid=$(id -g hermes 2>/dev/null || echo "missing")
+echo "[stage2] UID-remap inputs: HERMES_UID=${HERMES_UID:-unset} HERMES_GID=${HERMES_GID:-unset} current hermes uid=${_current_hermes_uid} gid=${_current_hermes_gid}"
+if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$_current_hermes_uid" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
 fi
-if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
+if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$_current_hermes_gid" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
     # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already
     # exist as "dialout" in the Debian-based container image).

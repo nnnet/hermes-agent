@@ -25,8 +25,31 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
+    build-essential ca-certificates curl iputils-ping nodejs npm python3 python-is-python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils lsof && \
     rm -rf /var/lib/apt/lists/*
+# lsof needed by @browsermcp/mcp at startup (it shells out to
+# `lsof -ti:9009 | xargs kill -9` to free the port before binding its
+# WebSocket server). Without lsof the npx process crashes on launch:
+#   /bin/sh: 1: lsof: not found
+#   Failed to kill process on port 9009
+#   tools.mcp_tool: Failed to connect to MCP server 'browsermcp': CancelledError
+# Symptom is silent in main container (only "(1 failed)" in MCP registration
+# line); per-profile sub-agents accumulate noise but still run. Adding lsof
+# is the minimal fix — package is tiny (~700KB).
+
+# yt-dlp baseline install. Runtime updates land in user-area via wrapper
+# (/opt/hermes-scripts/yt-dlp-fresh.sh) using PYTHONUSERBASE=/opt/data/.python-user
+# so the wrapper can `pip install --user --upgrade yt-dlp` without root.
+RUN pip install --no-cache-dir --break-system-packages yt-dlp
+
+# Claude Code CLI — required by the ``claude-agent-sdk`` Python package
+# (plugins/model-providers/claude-agent-sdk). Every query() call shells
+# out to the local ``claude`` binary for inference; without it the SDK
+# hangs and the call times out at 90s. Auth comes from
+# ``~/.claude/.credentials.json`` which compose mounts into
+# /home/hermes/.claude.
+RUN npm install -g @anthropic-ai/claude-code && \
+    claude --version || true
 
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
@@ -76,7 +99,14 @@ RUN set -eu; \
     rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
-RUN useradd -u 10000 -m -d /opt/data hermes
+# Native $HOME at /home/hermes so the container layout mirrors a host
+# install: $HOME/.hermes is the canonical config dir, mounted from
+# infra/hermes/.hermes/ in the repo. Backcompat symlink
+# /opt/data → /home/hermes/.hermes keeps older hardcoded paths working.
+RUN useradd -u 10000 -m hermes && \
+    mkdir -p /home/hermes/.hermes && \
+    chown -R hermes:hermes /home/hermes && \
+    ln -s /home/hermes/.hermes /opt/data
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
@@ -145,14 +175,35 @@ RUN npm install --prefer-offline --no-audit && \
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
 #
-# Provider packages (anthropic, bedrock, azure-identity) are included
-# so Docker users can use these providers without requiring runtime
-# lazy-install access to PyPI (often blocked in containerized envs).
+# `--extra claude-agent-sdk` bundles the official Anthropic Agent SDK
+# (which itself bundles the `claude` CLI binary) into the image so the
+# `provider: claude-agent-sdk` path doesn't need to do a runtime
+# `pip install` from `tools/lazy_deps.py` on first use. This is the
+# nnnet/AiManager-specific cutover from Meridian — kept as an explicit
+# `--extra` rather than added to `[all]` because upstream's `[all]`
+# is intentionally minimal (provider extras live in LAZY_DEPS). See
+# docs/claude-agent-sdk-integration.md.
+#
+# Provider packages (anthropic, bedrock, azure-identity — added upstream
+# 2026-05-30) are included so Docker users can use these providers
+# without requiring runtime lazy-install access to PyPI (often blocked
+# in containerized envs).
 #
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity
+# `--extra hindsight` bundles `hindsight-client` (pinned in [hindsight] extra
+# of pyproject.toml) into the image venv. Without it, the memory.hindsight
+# plugin lazy-installs at first use — but the lazy path only triggers in
+# `local_embedded` mode (plugins/memory/hindsight/__init__.py guard); for
+# `local_external` mode (Hermes talking to an external Hindsight HTTP server)
+# the import fires unconditionally → ModuleNotFoundError → retain silently
+# fails and the bank stays empty. Baking the dep in makes both modes work
+# out-of-the-box and removes the per-container-restart lazy-install churn.
+# `--extra messaging` (upstream 2026-05-17) preloads messaging gateway deps.
+# `--extra anthropic --extra bedrock --extra azure-identity` (upstream
+# 2026-05-30) bakes in provider client libs so first-use doesn't hit PyPI.
+RUN uv sync --frozen --no-install-project --extra all --extra claude-agent-sdk --extra workflow-engine --extra hindsight --extra messaging --extra anthropic --extra bedrock --extra azure-identity
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -273,19 +324,5 @@ VOLUME [ "/opt/data" ]
 # main program exits, /init begins stage 3 shutdown and the container
 # exits with the program's exit code. Replaces tini — see Phase 2 of
 # docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
-#
-# We use the ENTRYPOINT+CMD split rather than CMD alone so the
-# wrapper is prepended to user-supplied args automatically:
-#
-#   docker run <image>                  → /init main-wrapper.sh   (CMD default)
-#   docker run <image> chat -q "hi"     → /init main-wrapper.sh chat -q hi
-#   docker run <image> sleep infinity   → /init main-wrapper.sh sleep infinity
-#   docker run <image> --tui            → /init main-wrapper.sh --tui
-#
-# main-wrapper.sh handles arg routing (bare-exec vs. hermes
-# subcommand vs. no-args), drops to the hermes user via s6-setuidgid,
-# and exec's the final program so its exit code becomes the container
-# exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
-# like `--version` would be intercepted by /init's POSIX shell.
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
 CMD [ ]

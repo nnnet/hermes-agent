@@ -1147,8 +1147,10 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
-    """Sanity: the guidance block is under 4 KB so it doesn't blow
-    up the cached prompt."""
+    """Sanity: the guidance block is bounded so it doesn't blow up the
+    cached prompt. Upper bound is generous (8 KB) — upstream has been
+    growing the block whenever a new failure mode is observed in the
+    field, and trimming costs more than it saves at this size."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1157,7 +1159,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 4_096, (
+    assert 1_500 < len(KANBAN_GUIDANCE) < 8_192, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
 
@@ -1438,7 +1440,12 @@ def multi_board_env(monkeypatch, tmp_path):
         )
     finally:
         conn.close()
-    # Alt board — explicit slug routes the connection to a separate DB
+    # Alt board — must be explicitly created via create_board() before
+    # connect(); the kanban_db.connect() no-resurrect guard refuses to
+    # mkdir non-default boards on the fly (otherwise stale `?board=<gone>`
+    # callers would silently recreate deleted boards — see the dashboard
+    # bug fixed in fix/kanban-delete-active-board branch).
+    kb.create_board("alt")
     conn = kb.connect(board="alt")
     try:
         seed_alt = kb.create_task(
@@ -1639,7 +1646,10 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
 
     from hermes_cli import kanban_db as kb
     kb._INITIALIZED_PATHS.clear()
-    # Seed the alt board with a claimed task.
+    # Seed the alt board with a claimed task. Must create_board first —
+    # connect()'s no-resurrect guard rejects mkdir on the fly for
+    # non-default boards.
+    kb.create_board("alt")
     with kb.connect(board="alt") as conn:
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
         kb.claim_task(conn, tid)

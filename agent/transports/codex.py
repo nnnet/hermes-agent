@@ -5,10 +5,30 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+
+def _reasoning_include_disabled() -> bool:
+    """Return True if the user has opted out of ``reasoning.encrypted_content``.
+
+    ``include: ["reasoning.encrypted_content"]`` is only accepted by the
+    Responses API on reasoning-capable models (o-series, gpt-5*).  For
+    non-reasoning models the API returns:
+
+        HTTP 400: Encrypted content is not supported with this model.
+
+    Users targeting a non-reasoning OpenAI model (e.g. gpt-4o-mini) via
+    ``base_url: https://api.openai.com/v1`` can set
+    ``HERMES_DISABLE_REASONING_INCLUDE=true`` in ``~/.hermes/.env`` to
+    suppress the include parameter on every Responses-API request.
+    """
+    return (os.getenv("HERMES_DISABLE_REASONING_INCLUDE", "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -158,16 +178,31 @@ class ResponsesApiTransport(ProviderTransport):
         if not is_github_responses and not is_xai_responses and session_id:
             kwargs["prompt_cache_key"] = session_id
 
+        # Env-var escape hatch: when targeting a non-reasoning OpenAI model
+        # via the Responses API (e.g. gpt-4o-mini at api.openai.com), the
+        # API rejects ``include: ["reasoning.encrypted_content"]`` with
+        # HTTP 400.  Allow users to opt out so all encrypted-content
+        # additions below are suppressed.
+        _include_reasoning = not _reasoning_include_disabled()
+
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
-            # Ask xAI to echo back encrypted reasoning items so we can
-            # replay them on subsequent turns for cross-turn coherence.
-            # See agent/codex_responses_adapter._chat_messages_to_responses_input
-            # for the May 2026 reversal of the earlier suppression gate.
-            kwargs["include"] = (
-                ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
-            )
+            # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
+            # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
+            # replayed encrypted reasoning items on turn 2+ — see
+            # _chat_messages_to_responses_input docstring.  Requesting the field
+            # back would just have us cache something we then must strip.  Grok
+            # still reasons natively each turn; coherence across turns rides on
+            # the visible message text alone.  The ``HERMES_DISABLE_REASONING_INCLUDE``
+            # env-var escape hatch (see ``_reasoning_include_disabled``) still
+            # governs the non-xAI reasoning branch below; for xAI the override
+            # is unconditional because the API outright rejects replay.
+            # Upstream 2026-05-25 (and again in 2026-05-30) flipped back to
+            # requesting it via ``replay_encrypted_reasoning``; we keep
+            # the unconditional suppression because our prod observed the
+            # 400 rejections on every turn 2+ regardless of the flag.
+            kwargs["include"] = []
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when
@@ -181,10 +216,11 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = (
-                    ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
-                )
+                if _include_reasoning:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = (
+                        ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
+                    )
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

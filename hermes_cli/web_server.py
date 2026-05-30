@@ -3946,13 +3946,14 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "default",         "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large",   "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "midnight",        "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",           "label": "Ember",               "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",            "label": "Mono",                "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk",       "label": "Cyberpunk",           "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",            "label": "Rosé",                "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "mission-control", "label": "Mission Control",     "description": "Flat dark — palette and chrome copied from Mission Control"},
 ]
 
 
@@ -4404,11 +4405,24 @@ async def get_dashboard_plugins():
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+
+    # The /plugins UI Hide-from-sidebar button POSTs the agent-plugin path
+    # (e.g. "image_gen/openai") into dashboard.hidden_plugins, while
+    # dashboard manifests carry their own short ``name`` field ("openai").
+    # A literal in-list check misses the suffix match, so toggling Hide for
+    # any category-namespaced plugin had no visible effect. Treat trailing-
+    # segment matches as hits too.
+    def _is_hidden(plugin_name: str) -> bool:
+        if plugin_name in hidden:
+            return True
+        suffix = "/" + plugin_name
+        return any(isinstance(h, str) and h.endswith(suffix) for h in hidden)
+
     # Strip internal fields before sending to frontend and filter out hidden.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if p["name"] not in hidden
+        if not _is_hidden(p["name"])
     ]
 
 

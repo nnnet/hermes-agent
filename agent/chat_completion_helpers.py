@@ -197,6 +197,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             elif agent.api_mode == "anthropic_messages":
                 result["response"] = agent._anthropic_messages_create(api_kwargs)
+            elif agent.api_mode == "claude_agent_sdk_single_turn":
+                # Single-turn SDK delegation.  Bridges async-iter
+                # ``query()`` → sync list-of-messages; the response
+                # validator + normalizer paths below treat the list
+                # uniformly (transport.normalize_response drains it).
+                result["response"] = agent._claude_agent_sdk_create(api_kwargs)
             elif agent.api_mode == "bedrock_converse":
                 # Bedrock uses boto3 directly — no OpenAI client needed.
                 # normalize_converse_response produces an OpenAI-compatible
@@ -231,6 +237,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
         except Exception as e:
             result["error"] = e
         finally:
+            # Provider-level outcome observation hook (opt-in: only
+            # providers that declare ``observe_outcome`` receive the
+            # callback). Used by openrouter_custom's rotation strategies
+            # to track per-model health. Any failure here is swallowed
+            # so observation never breaks the request path.
+            try:
+                from providers import get_provider_profile  # local import
+                _profile = get_provider_profile(getattr(agent, "provider", None))
+                if _profile is not None and hasattr(_profile, "observe_outcome"):
+                    _eb = api_kwargs.get("extra_body") or {}
+                    _req_models = list(_eb.get("models") or [])
+                    _profile.observe_outcome(
+                        response=result.get("response"),
+                        error=result.get("error"),
+                        request_models=_req_models,
+                    )
+            except Exception:
+                pass
             _close_request_client_once("request_complete")
 
     # ── Stale-call timeout (mirrors streaming stale detector) ────────
@@ -548,6 +572,24 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+        )
+
+    # Claude Agent SDK (single-turn delegation) — spawns the host
+    # Claude Code CLI via the official ``claude-agent-sdk`` package.
+    # The transport pins ``max_turns=1`` and ``allowed_tools=[]`` so
+    # Hermes' own agent loop stays in charge of tool execution; the
+    # SDK is used only as the wire surface to one Claude call backed
+    # by host subscription auth.  Sentinel-keyed kwargs in the
+    # returned dict are consumed by ``_interruptible_api_call`` —
+    # see ``_claude_agent_sdk_create`` for the call site.
+    if agent.api_mode == "claude_agent_sdk_single_turn":
+        _cas_t = agent._get_transport()
+        anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        return _cas_t.build_kwargs(
+            model=agent.model,
+            messages=anthropic_messages,
+            tools=tools_for_api,
+            base_url=getattr(agent, "_anthropic_base_url", None),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -1100,10 +1142,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # First honour the explicit api_mode from the fallback config entry —
+        # without this, providers like claude-via-meridian (Meridian on
+        # 127.0.0.1:3456) get routed to /chat/completions and return 404 even
+        # though the YAML clearly says ``api_mode: anthropic_messages``.
+        _explicit_fb_api_mode = (fb.get("api_mode") or "").strip().lower()
+        if _explicit_fb_api_mode in ("anthropic_messages", "chat_completions", "codex_responses", "bedrock_converse"):
+            fb_api_mode = _explicit_fb_api_mode
+        else:
+            fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if _explicit_fb_api_mode:
+            pass  # explicit wins
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"
@@ -1553,6 +1605,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             return agent._interruptible_api_call(api_kwargs)
         finally:
             agent._codex_on_first_delta = None
+
+    if agent.api_mode == "claude_agent_sdk_single_turn":
+        # The SDK's ``query()`` runs a Claude CLI subprocess that
+        # delivers complete ``Message`` objects, not token-level
+        # deltas in the shape the stream-delta callback expects.
+        # Single-turn invocations finish in one CLI roundtrip, so
+        # there is no real streaming win — delegate to the non-
+        # streaming path and fire ``on_first_delta`` once the
+        # response is in hand to clear the thinking spinner.
+        try:
+            response = agent._interruptible_api_call(api_kwargs)
+        finally:
+            if on_first_delta:
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+        return response
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.
@@ -2381,6 +2451,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
+    # Provider-level outcome observation hook (streaming path mirror of
+    # interruptible_api_call's finally-block hook). Opt-in: only fires
+    # for providers that declare ``observe_outcome``. Used by
+    # openrouter_custom rotation strategies to track per-model health.
+    # Any failure here is swallowed so observation never breaks the
+    # request path.
+    try:
+        from providers import get_provider_profile  # local import
+        _profile = get_provider_profile(getattr(agent, "provider", None))
+        if _profile is not None and hasattr(_profile, "observe_outcome"):
+            _eb = api_kwargs.get("extra_body") or {}
+            _req_models = list(_eb.get("models") or [])
+            _profile.observe_outcome(
+                response=result.get("response"),
+                error=result.get("error"),
+                request_models=_req_models,
+            )
+    except Exception:
+        pass
     if result["error"] is not None:
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to

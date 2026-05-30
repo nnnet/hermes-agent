@@ -123,6 +123,96 @@ class TestMarkdownStripping:
         assert "docs" in result
 
 
+class TestEmojiAndDividerStripping:
+    """Regression tests for the voice-mode complaint where TTS engines
+    pronounced ``✅`` as 'check mark', ``❌`` as 'cross mark', etc.
+
+    Why: A direct user complaint reported that running an agent reply
+    containing status emoji and markdown horizontal rules through TTS made
+    the voice say "check mark / cross mark / horizontal rule" out loud.
+    The fix routes the gateway and CLI through ``_strip_markdown_for_tts``,
+    which already had the unicode pictograph regex — these tests pin the
+    contract so a future refactor cannot silently regress it.
+    Test: assert each problematic glyph is removed while surrounding prose
+    survives, using the exact failing user input from the bug report.
+    """
+
+    def test_strips_status_emoji(self):
+        """Why: bug report specifically called out ✅ ❌ 🚨 being voiced.
+        Test: assert each of these glyphs is gone after sanitization."""
+        text = "Status: ✅ done, ❌ failed, 🚨 alert"
+        result = _strip_markdown_for_tts(text)
+        for glyph in ("✅", "❌", "🚨"):
+            assert glyph not in result, f"{glyph!r} leaked into TTS output: {result!r}"
+        assert "done" in result and "failed" in result and "alert" in result
+
+    def test_emoji_only_string_becomes_empty(self):
+        """Why: an emoji-only line should produce silence, not 'cross mark cross mark'.
+        Test: assert pure emoji input returns empty string after stripping."""
+        assert _strip_markdown_for_tts("✅✅❌🚨🎉") == ""
+
+    def test_mixed_cyrillic_latin_emoji(self):
+        """Why: multilingual users mix Russian + English + emoji in one reply.
+        Test: assert both alphabets survive while emojis are dropped."""
+        text = "Привет ✅ world 🚨 готово"
+        result = _strip_markdown_for_tts(text)
+        assert "Привет" in result
+        assert "world" in result
+        assert "готово" in result
+        assert "✅" not in result and "🚨" not in result
+
+    def test_bullets_emoji_and_hr_from_real_bug_report(self):
+        """Why: this is the exact input the user pasted in the complaint —
+        bullet+emoji combo followed by a markdown horizontal rule and a
+        section heading prefixed by 🚨. Voice engine was reading the
+        check marks, dashes, and emergency siren aloud.
+        Test: assert ✅/❌/🚨/--- all gone but prose between them survives."""
+        text = (
+            "- ✅ Live MCP infrastructure test performed (result: ❌ ValidationError)\n"
+            "- ✅ Comment posted on t_dd6edfbe (comment #111)\n"
+            "- ✅ Comment posted on t_b8ae2641 (comment #112)\n"
+            "\n"
+            "---\n"
+            "\n"
+            "🚨 Human"
+        )
+        result = _strip_markdown_for_tts(text)
+        for glyph in ("✅", "❌", "🚨", "---"):
+            assert glyph not in result, f"{glyph!r} leaked: {result!r}"
+        assert "Live MCP infrastructure test performed" in result
+        assert "ValidationError" in result
+        assert "Human" in result
+        # The dash-bullet at line start must not be pronounced as "dash":
+        assert "- " not in result
+
+    def test_strips_divider_only_line(self):
+        """Why: a line containing only ``===`` or ``___`` is a visual divider
+        that some TTS engines pronounce ("equals equals equals").
+        Test: assert such lines are removed entirely."""
+        text = "Before\n===\nAfter"
+        result = _strip_markdown_for_tts(text)
+        assert "===" not in result
+        assert "Before" in result and "After" in result
+
+    def test_strips_box_drawing_chars(self):
+        """Why: tool output diagrams use ┌──┐│└──┘ which TTS reads as gibberish.
+        Test: assert box-drawing chars are gone but the inner label survives."""
+        text = "┌─────────┐\n│ Status │\n└─────────┘"
+        result = _strip_markdown_for_tts(text)
+        for ch in "┌─┐│└┘":
+            assert ch not in result
+        assert "Status" in result
+
+    def test_strips_markdown_image_completely(self):
+        """Why: markdown image syntax `![alt](url)` was leaving a leftover `!`
+        because the link regex didn't consume the leading bang. TTS would then
+        read "exclamation alt" instead of just "alt".
+        Test: assert the `!` is gone for images and regular links still work."""
+        assert _strip_markdown_for_tts("see ![logo](https://example.com/x.png) here") == "see  here"
+        # Also ensure regular links still work:
+        assert _strip_markdown_for_tts("see [text](url) here") == "see text here"
+
+
 # ============================================================================
 # Voice command parsing
 # ============================================================================

@@ -647,6 +647,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    anthropic_version: Optional[str] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -757,6 +758,17 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Allow caller to pin the anthropic-version header (e.g. for a
+    # third-party Anthropic-compatible proxy that only understands a
+    # specific protocol version). SDK already sends a default; we only
+    # override when the caller asked for one. Merges into default_headers
+    # alongside anthropic-beta etc. set above.
+    if isinstance(anthropic_version, str) and anthropic_version.strip():
+        existing_headers = kwargs.get("default_headers") or {}
+        existing_headers = dict(existing_headers)
+        existing_headers["anthropic-version"] = anthropic_version.strip()
+        kwargs["default_headers"] = existing_headers
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

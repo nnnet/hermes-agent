@@ -66,3 +66,9 @@ def _discover_transports() -> None:
         import agent.transports.bedrock  # noqa: F401
     except ImportError:
         pass
+    try:
+        import agent.transports.claude_agent_sdk  # noqa: F401
+    except ImportError:
+        # SDK not installed — selecting `provider: claude-agent-sdk`
+        # will surface a clear install hint at build_kwargs() time.
+        pass

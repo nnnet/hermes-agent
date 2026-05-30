@@ -585,6 +585,10 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            # GitHub mirror — best-effort commit+push of any artefacts the
+            # worker left under the workspace. Silently skips when the App
+            # isn't configured or the workspace isn't tracked.
+            _github_mirror_push_on_complete(kb, conn, tid, summary or result or "", board=board)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -593,6 +597,33 @@ def _handle_complete(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_complete failed")
         return tool_error(f"kanban_complete: {e}")
+
+
+def _github_mirror_push_on_complete(
+    kb, conn, task_id: str, message_hint: str, *, board: Optional[str] = None
+) -> None:
+    """Try to commit+push the task's workspace to its board's GitHub mirror.
+
+    Lazy import + broad exception catch — this hook MUST NOT cause
+    kanban_complete to fail. The task is already marked done at this point.
+    """
+    try:
+        from tools.github_app_workspace import commit_and_push, is_configured
+        from hermes_cli import kanban_db
+    except Exception:
+        return
+    if not is_configured():
+        return
+    try:
+        task = kb.get_task(conn, task_id)
+        if not task:
+            return
+        workspace = kanban_db.resolve_workspace(task, board=board)
+        slug = kanban_db._normalize_board_slug(board) or kanban_db.get_current_board()
+        msg = f"task {task_id}: {(message_hint or '').strip()[:80] or 'completed'}"
+        commit_and_push(workspace, msg, board_slug=slug)
+    except Exception as exc:
+        logger.warning("github mirror push for %s skipped: %s", task_id, exc)
 
 
 def _handle_block(args: dict, **kw) -> str:

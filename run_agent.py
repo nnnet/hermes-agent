@@ -3197,8 +3197,13 @@ class AIAgent:
             return False
         # Azure endpoints use static API keys — OAuth token rotation doesn't apply.
         # Refreshing would pick up ~/.claude/.credentials.json OAuth token and break auth.
-        _base = getattr(self, "_anthropic_base_url", "") or ""
-        if "azure.com" in _base:
+        # Same applies to ANY third-party Anthropic-compatible proxy
+        # (CLR-Gateway, LiteLLM, self-hosted): they ship their own keys
+        # that aren't Anthropic OAuth tokens; replacing the static key with
+        # an Anthropic OAuth token sends it to the third-party endpoint
+        # which rejects with 401 INVALID_USER_TOKEN.
+        _base = (getattr(self, "_anthropic_base_url", "") or "").lower()
+        if _base and "anthropic.com" not in _base:
             return False
 
         try:
@@ -3340,6 +3345,89 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
+
+    def _claude_agent_sdk_create(self, api_kwargs: dict):
+        """Run a single-turn ``claude_agent_sdk.query()`` and return the message list.
+
+        Why
+            Hermes' agent loop is synchronous; the SDK's ``query()`` returns
+            an ``AsyncIterator[Message]``.  We bridge with a fresh
+            ``asyncio.run`` per call — single-turn ``max_turns=1`` calls
+            complete in one CLI subprocess invocation so there is no
+            persistent event loop to keep alive.
+        What
+            Pulls the sentinel-keyed ``prompt`` + ``options`` out of
+            ``api_kwargs``, lazy-imports ``claude_agent_sdk``, drains the
+            async-iter into a concrete list, and returns it.  Downstream
+            (``normalize_response`` on the SDK transport) consumes the
+            list and produces a ``NormalizedResponse`` carrying any
+            tool_use blocks, so Hermes' loop can execute them.
+        Test
+            See ``tests/agent/test_claude_agent_sdk_dispatch.py`` —
+            mocks ``claude_agent_sdk.query`` to yield a fake message
+            stream and asserts the agent receives ``NormalizedResponse``
+            with text + tool_use preserved.
+
+        Error handling
+            * ``claude_agent_sdk`` not installed → ``RuntimeError`` with
+              the ``pip install hermes-agent[claude-agent-sdk]`` hint.
+            * CLI auth missing (``CLINotFoundError`` /
+              ``CLIConnectionError`` from the SDK) → re-raised as
+              ``RuntimeError`` pointing the user at ``claude /login``
+              on the host.  Other SDK errors propagate unchanged.
+        """
+        # The transport hands us sentinel keys on the kwargs dict; pull
+        # them out, leave anything else (future-proofing) untouched.
+        prompt = api_kwargs.get("prompt", "") or ""
+        options = api_kwargs.get("options")
+
+        try:
+            import claude_agent_sdk  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "claude_agent_sdk is not installed.  Install with:\n"
+                "    pip install 'hermes-agent[claude-agent-sdk]'\n"
+                "or directly:\n"
+                "    pip install claude-agent-sdk"
+            ) from exc
+
+        # The SDK exposes specific exception types for CLI/auth failures.
+        # We map the two most actionable ones to RuntimeErrors with
+        # operator-friendly hints so they surface in Hermes logs in the
+        # same shape as other provider errors.
+        _CLINotFoundError = getattr(claude_agent_sdk, "CLINotFoundError", None)
+        _CLIConnectionError = getattr(claude_agent_sdk, "CLIConnectionError", None)
+
+        async def _collect() -> list:
+            collected: list = []
+            async for msg in claude_agent_sdk.query(prompt=prompt, options=options):
+                collected.append(msg)
+            return collected
+
+        try:
+            return asyncio.run(_collect())
+        except Exception as exc:
+            # CLI binary not on PATH inside the worker.  The SDK bundles
+            # its own ``claude`` CLI when installed, but a stripped
+            # environment (or a broken install) can still hit this.
+            if _CLINotFoundError is not None and isinstance(exc, _CLINotFoundError):
+                raise RuntimeError(
+                    "Claude Code CLI not found.  Ensure the "
+                    "'hermes-agent[claude-agent-sdk]' extra is installed; "
+                    "the package bundles the CLI binary.  On host installs, "
+                    "verify ~/.claude/.credentials.json exists and run "
+                    "`claude /login` on the host if not."
+                ) from exc
+            # OAuth credentials missing or unreadable.  The SDK reads
+            # ~/.claude/.credentials.json (or $CLAUDE_CONFIG_DIR/.credentials.json).
+            if _CLIConnectionError is not None and isinstance(exc, _CLIConnectionError):
+                raise RuntimeError(
+                    "Claude Code CLI failed to authenticate.  Check that "
+                    "~/.claude/.credentials.json exists on the host and is "
+                    "readable from inside the container (if dockerized).  "
+                    "If missing, run `claude /login` on the host."
+                ) from exc
+            raise
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.

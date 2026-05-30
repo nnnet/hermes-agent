@@ -397,6 +397,54 @@ class ToolRegistry:
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+
+        # F1 desire-to-goal gate: if this session is "active" (vague-desire
+        # pattern was detected) AND the agent hasn't yet loaded the
+        # desire-to-goal skill, block side-effecting tools and tell the
+        # agent to call skill_view first. Pass-through for skill_view itself
+        # and for read-only/information-gathering tools.
+        try:
+            import os
+            from tools import desire_to_goal_gate as _f1
+            # Read session_id through the ContextVar wrapper (concurrency
+            # safe; the plain os.environ value is overwritten by agent_init
+            # to agent.session_id, which differs from session_entry.session_id
+            # used by gateway's activate() — using get_session_env keeps
+            # them in sync per-task).
+            try:
+                from gateway.session_context import get_session_env
+                _sid = get_session_env("HERMES_SESSION_ID", "")
+            except Exception:
+                _sid = os.environ.get("HERMES_SESSION_ID") or ""
+            # First: if this IS a skill_view of desire-to-goal, mark loaded.
+            if name == "skill_view":
+                _skill_arg = (args or {}).get("name") or ""
+                if any(s in _skill_arg for s in _f1.DESIRE_TO_GOAL_SKILL_NAMES):
+                    _f1.mark_skill_loaded(_sid)
+                    logger.info("[F1 gate] skill_view loaded for session=%s",
+                                _sid[:12] if _sid else "?")
+            # Diagnostic: log every dispatch when F1 active so we can see
+            # what's pass-through and what's blocked.
+            _is_active = _f1.is_active(_sid)
+            _is_loaded = _f1.has_skill_loaded(_sid)
+            if _is_active:
+                logger.info(
+                    "[F1 dispatch] tool=%s session=%s active=%s loaded=%s "
+                    "blocked_set=%s",
+                    name, _sid[:12] if _sid else "?",
+                    _is_active, _is_loaded,
+                    name in _f1.BLOCKED_TOOLS_BEFORE_SKILL,
+                )
+            if (name in _f1.BLOCKED_TOOLS_BEFORE_SKILL
+                    and _is_active and not _is_loaded):
+                logger.info(
+                    "[F1 gate] BLOCKED tool=%s for session=%s",
+                    name, _sid[:12] if _sid else "?",
+                )
+                return json.dumps({"error": _f1.block_message(name)})
+        except Exception:
+            logger.debug("F1 gate dispatch hook failed", exc_info=True)
+
         try:
             if entry.is_async:
                 from model_tools import _run_async

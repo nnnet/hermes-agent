@@ -5,11 +5,19 @@
 # as /init's "main program" (Docker CMD) so it inherits stdin/stdout/
 # stderr from the container.
 #
-# Shebang note: /init scrubs env before invoking CMD, so a plain
-# `#!/bin/sh` wrapper sees an empty environ and `ENV HERMES_HOME=/opt/data`
-# from the Dockerfile never reaches `hermes`. with-contenv repopulates
-# the env from /run/s6/container_environment before exec'ing, which is
-# what s6-supervised services use too (see main-hermes/run).
+# IMPORTANT — the shebang MUST be ``#!/command/with-contenv sh`` (NOT
+# bare ``#!/bin/sh``).  s6-overlay stores container env vars (those
+# populated by Docker's ``env_file:`` / ``environment:`` blocks) into
+# /run/s6/container_environment/<NAME> files, not into PID 1's actual
+# environ.  Plain ``sh`` inherits PID 1's environ → minimal env (just
+# PATH + a couple of basics).  The ``with-contenv`` wrapper reads those
+# files first, then execs sh with the full env applied, so the gateway
+# process actually sees TELEGRAM_BOT_TOKEN, HERMES_HOME, OPENAI_API_KEY
+# etc.  Without this, the gateway logs "No messaging platforms enabled"
+# at boot and the bot never connects, even though the env_file is loaded
+# and visible via ``docker exec hermes printenv``.
+# (Upstream phrasing 2026-05-30: /init scrubs env before invoking CMD,
+# so `#!/bin/sh` wrapper sees an empty environ — same root cause.)
 #
 # Routing:
 #   no args                       → exec `hermes` (the default)
@@ -20,10 +28,17 @@
 # workload runs unprivileged (UID 10000 by default).
 set -e
 
-# HOME comes through with-contenv as /root (the /init context). Override
-# to the hermes user's home before dropping privileges so libraries that
-# resolve paths via $HOME (e.g. discord lockfile under XDG_STATE_HOME)
-# don't try to write to /root.
+# Pin HOME to the hermes user's actual home dir so libraries that
+# expand ``~`` / ``$HOME`` (notably the gateway's per-bot-token lock
+# file at $HOME/.local/state/hermes/gateway-locks/, and upstream's
+# discord lockfile under XDG_STATE_HOME) write into the bind-mounted
+# data dir and not into PID 1's leaked /root path.
+# Without this the gateway dies on TG connect with:
+#   PermissionError: [Errno 13] Permission denied:
+#   '/root/.local/state/hermes/gateway-locks/telegram-bot-token-*.lock'
+# Dockerfile creates hermes with useradd -u 10000 -m -d /opt/data,
+# so /opt/data is the canonical home (and the bind-mount target for
+# host's .hermes state dir).
 export HOME=/opt/data
 
 cd /opt/data

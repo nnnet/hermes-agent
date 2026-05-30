@@ -97,6 +97,12 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
+    # Local Meridian proxy (claude-via-meridian / claude-agent-sdk plugins)
+    # exposes Anthropic Messages protocol on host 127.0.0.1:3456 — without
+    # this hint /model --global resets api_mode, falls back to chat
+    # completions and gets HTTP 404 from Meridian.
+    if hostname in ("127.0.0.1", "localhost") and ":3456" in normalized:
+        return "anthropic_messages"
     return None
 
 
@@ -1257,6 +1263,28 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    # claude-agent-sdk (and any other auth_type=none plugin) short-circuit.
+    # These providers carry no HTTP base_url and no API key — auth lives
+    # inside a CLI subprocess (~/.claude/.credentials.json for the official
+    # Claude Code CLI). Falling through to the openrouter-default path
+    # below would emit base_url=https://openrouter.ai/api/v1 and route
+    # the call to a third-party aggregator.
+    try:
+        from providers import get_provider_profile as _gpf_rt
+        _rt_profile = _gpf_rt(requested_provider)
+    except Exception:
+        _rt_profile = None
+    if _rt_profile is not None and getattr(_rt_profile, "auth_type", "") == "none":
+        _rt_api_mode = getattr(_rt_profile, "api_mode", "") or "chat_completions"
+        return {
+            "provider": requested_provider,
+            "api_mode": _rt_api_mode,
+            "base_url": "",
+            "api_key": "",
+            "source": "plugin-self-managed",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -1516,8 +1544,26 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
+            # Honor inline api_key on model config FIRST — third-party
+            # Anthropic-compatible proxies (CLR-Gateway, LiteLLM,
+            # self-hosted) ship their own keys that don't follow Anthropic
+            # OAuth conventions; falling straight to resolve_anthropic_token()
+            # picks up the Claude Code OAuth token from
+            # ~/.claude/.credentials.json and sends it to the proxy → 401
+            # INVALID_USER_TOKEN. Mirrors the Azure branch above (line 1261)
+            # and the custom-provider branch elsewhere in this file.
+            token = ""
+            for hint_key in ("key_env", "api_key_env"):
+                env_var = str(model_cfg.get(hint_key) or "").strip()
+                if env_var:
+                    token = os.getenv(env_var, "").strip()
+                    if token:
+                        break
+            if not token:
+                token = str(model_cfg.get("api_key") or "").strip()
+            if not token:
+                from agent.anthropic_adapter import resolve_anthropic_token
+                token = resolve_anthropic_token()
             if not token:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "

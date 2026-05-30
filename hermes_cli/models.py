@@ -2149,6 +2149,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)
+
+        # Non-api_key profiles (auth_type="none", "oauth_*", etc.) — no live
+        # fetch path here, but they can still surface a curated model list
+        # via ProviderProfile.fallback_models. Without this branch a plugin
+        # like model-providers/claude-agent-sdk shows up as a 0-models row
+        # in /model and the user can't select it.
+        if _p and _p.fallback_models:
+            return list(_p.fallback_models)
     except Exception:
         pass
 
@@ -3378,6 +3386,34 @@ def validate_requested_model(
             "recognized": False,
             "message": "Model names cannot contain spaces.",
         }
+
+    # Plugin-overridden catalog — when a ProviderProfile subclass narrows
+    # fetch_models() to a deliberate single list (e.g. a pseudo-alias plugin
+    # like openrouter_custom that masks the live OR catalog behind one
+    # stable name), trust that override instead of probing the upstream
+    # /v1/models endpoint. Without this branch the validator falls through
+    # to fetch_api_models() against the real upstream and rejects the
+    # alias because no such id exists upstream.
+    try:
+        from providers import get_provider_profile as _gpf_v
+        _vp = _gpf_v(normalized)
+    except Exception:
+        _vp = None
+    if _vp is not None:
+        _profile_cls = type(_vp)
+        _has_fetch_override = _profile_cls.fetch_models is not type(_vp).__mro__[-2].fetch_models  # type: ignore[attr-defined]
+        if _has_fetch_override:
+            try:
+                _curated = _vp.fetch_models(api_key=api_key) or []
+            except Exception:
+                _curated = []
+            if _curated and requested_for_lookup in set(_curated):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
 
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
