@@ -290,8 +290,6 @@ TOOLSETS = {
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
-            # Chief sub-agent lifecycle (orchestrator-tier)
-            "chief_spawn", "chief_status", "chief_list", "chief_terminate",
             # Backend-agnostic workflow orchestration (wraps mc_pipeline_*,
             # inline-runner via /api/v1/run-profile, future: langgraph etc.)
             "workflow_run", "workflow_status", "workflow_cancel",
@@ -299,8 +297,13 @@ TOOLSETS = {
             # NOTE: mc_pipeline_*, mc_exec_approve*, mc_agents_list,
             # mc_task_*, mc_project_create, mc_agent_create, mc_cost_summary
             # are appended at runtime by the external nnnet/hermes-plugin-
-            # mc-tools plugin's register(). Kept out of this static list so
-            # future upstream merges of toolsets.py stay conflict-free.
+            # mc-tools plugin's register().
+            # NOTE: chief_spawn / chief_status / chief_list /
+            # chief_terminate / chief_answer_question / tg_send / tg_ask /
+            # tg_ask_status are appended at runtime by the external
+            # nnnet/hermes-plugin-chief-tools plugin's register().
+            # Both kept out of this static list so future upstream merges
+            # of toolsets.py stay conflict-free.
         ],
         "includes": [],
     },
