@@ -1,2 +1,11 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+
+# Upstream paths we keep as-is but don't want re-applied during upstream merges.
+# Files exist in tree (so diff is clean) but our merge driver returns "no-op",
+# preventing future upstream edits from sneaking back into our customizations.
+# Setup once per clone: scripts/setup-merge-drivers.sh
+plugins/dashboard_auth/nous/**     merge=ours
+plugins/image_gen/krea/**          merge=ours
+plugins/security-guidance/**       merge=ours
+website/**                         merge=ours
