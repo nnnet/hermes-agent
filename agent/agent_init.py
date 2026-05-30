@@ -340,6 +340,21 @@ def init_agent(
     except Exception:
         pass
 
+    # Pre-init agent.session_id so plugins that key per-session state
+    # off it (e.g. openrouter_custom's _alias_sessions marker) see the
+    # real id during resolve_runtime_model — not the empty string the
+    # downstream init block (lines 1044+) would otherwise assign too
+    # late. The downstream block becomes a no-op when session_id is
+    # already set (see its guard).
+    if not getattr(agent, "session_id", ""):
+        agent.session_start = datetime.now()
+        if session_id:
+            agent.session_id = session_id
+        else:
+            timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            agent.session_id = f"{timestamp_str}_{short_uuid}"
+
     # ProviderProfile.resolve_runtime_model hook — gives plugins a chance
     # to swap a stable picker-level pseudo-name for the actual catalog id
     # before any downstream code (LLM client construction, prompt-cache
@@ -1040,15 +1055,20 @@ def init_agent(
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
     
     # Session logging setup - auto-save conversation trajectories for debugging
-    agent.session_start = datetime.now()
-    if session_id:
-        # Use provided session ID (e.g., from CLI)
-        agent.session_id = session_id
-    else:
-        # Generate a new session ID
-        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
-        short_uuid = uuid.uuid4().hex[:6]
-        agent.session_id = f"{timestamp_str}_{short_uuid}"
+    # NOTE: this block became a no-op for the common path because
+    # session_id is now pre-initialized above (before resolve_runtime_model)
+    # so plugins like openrouter_custom can mark per-session state with
+    # the real id rather than an empty string.
+    if not getattr(agent, "session_id", ""):
+        agent.session_start = datetime.now()
+        if session_id:
+            # Use provided session ID (e.g., from CLI)
+            agent.session_id = session_id
+        else:
+            # Generate a new session ID
+            timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            agent.session_id = f"{timestamp_str}_{short_uuid}"
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
