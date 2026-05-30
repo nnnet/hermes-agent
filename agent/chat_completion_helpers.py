@@ -252,6 +252,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
         except Exception as e:
             result["error"] = e
         finally:
+            # Provider-level outcome observation hook (opt-in: only
+            # providers that declare ``observe_outcome`` receive the
+            # callback). Used by openrouter_custom's rotation strategies
+            # to track per-model health. Any failure here is swallowed
+            # so observation never breaks the request path.
+            try:
+                from providers import get_provider_profile  # local import
+                _profile = get_provider_profile(getattr(agent, "provider", None))
+                if _profile is not None and hasattr(_profile, "observe_outcome"):
+                    _eb = api_kwargs.get("extra_body") or {}
+                    _req_models = list(_eb.get("models") or [])
+                    _profile.observe_outcome(
+                        response=result.get("response"),
+                        error=result.get("error"),
+                        request_models=_req_models,
+                    )
+            except Exception:
+                pass
             _close_request_client_once("request_complete")
 
     # ── Stale-call timeout (mirrors streaming stale detector) ────────
