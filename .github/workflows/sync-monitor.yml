@@ -52,12 +52,28 @@ jobs:
 
       - name: Compare prod vs main (commits behind)
         id: divergence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --filter=blob:none --no-checkout https://github.com/${{ github.repository }}.git repo
-          cd repo
-          git fetch origin main:main prod:prod
-          BEHIND=$(git rev-list --count prod..main)
-          AHEAD=$(git rev-list --count main..prod)
+          # Use the compare API instead of a local clone — the previous
+          # implementation cloned into ``repo/`` then ran ``git fetch
+          # origin prod:prod`` which blows up with "refusing to fetch
+          # into branch 'refs/heads/prod' checked out" when the
+          # cloned HEAD already points at ``prod`` (the repo's default
+          # branch). The API call gives the same counts without
+          # filesystem state.
+          #
+          # API contract for ``compare/<base>...<head>``:
+          #   ahead_by  — number of commits HEAD has that BASE doesn't
+          #   behind_by — number of commits BASE has that HEAD doesn't
+          # We compare ``prod...main``, so:
+          #   ahead_by  = main commits not in prod = "prod behind main"
+          #   behind_by = prod commits not in main = "prod ahead of main"
+          DATA=$(gh api "repos/${{ github.repository }}/compare/prod...main")
+          BEHIND=$(echo "$DATA" | jq '.ahead_by')
+          AHEAD=$(echo "$DATA" | jq '.behind_by')
+          echo "prod behind main: $BEHIND commits"
+          echo "prod ahead of main: $AHEAD commits"
           echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
           echo "ahead=$AHEAD"   >> "$GITHUB_OUTPUT"
 
