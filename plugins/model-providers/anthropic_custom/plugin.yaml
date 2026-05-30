@@ -1,5 +1,0 @@
-name: anthropic-custom-provider
-kind: model-provider
-version: 1.0.0
-description: Anthropic Messages protocol against a custom base_url (default — CLR Gateway)
-author: nnnet/AiManager
