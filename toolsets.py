@@ -292,20 +292,15 @@ TOOLSETS = {
             "kanban_unblock",
             # Chief sub-agent lifecycle (orchestrator-tier)
             "chief_spawn", "chief_status", "chief_list", "chief_terminate",
-            # Mission Control pipelines + approvals + agent registry
-            "mc_pipeline_run", "mc_pipeline_list", "mc_pipeline_status",
-            "mc_pipeline_cancel",
-            "mc_exec_approve", "mc_exec_approve_list",
-            "mc_agents_list",
             # Backend-agnostic workflow orchestration (wraps mc_pipeline_*,
             # inline-runner via /api/v1/run-profile, future: langgraph etc.)
             "workflow_run", "workflow_status", "workflow_cancel",
             "workflow_list_templates",
-            # MC task lifecycle (create/get/list/update/comment/retry)
-            "mc_task_list", "mc_task_get", "mc_task_create",
-            "mc_task_update", "mc_task_comment", "mc_task_retry",
-            # Cost visibility
-            "mc_cost_summary",
+            # NOTE: mc_pipeline_*, mc_exec_approve*, mc_agents_list,
+            # mc_task_*, mc_project_create, mc_agent_create, mc_cost_summary
+            # are appended at runtime by the external nnnet/hermes-plugin-
+            # mc-tools plugin's register(). Kept out of this static list so
+            # future upstream merges of toolsets.py stay conflict-free.
         ],
         "includes": [],
     },
