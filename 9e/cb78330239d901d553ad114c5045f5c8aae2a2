@@ -1,0 +1,117 @@
+gateway/config.py
+  s_e5369d415d379b::t_eee657568fa389 782-784,789-790
+hermes_cli/voice.py
+  s_e5369d415d379b::t_eee657568fa389 782,785-795
+agent/tool_executor.py
+  s_e5369d415d379b::t_eee657568fa389 309-335
+hermes_cli/auth.py
+  s_e5369d415d379b::t_eee657568fa389 452-453,461-470
+plugins/browser/browser_use/provider.py
+  s_e5369d415d379b::t_eee657568fa389 122,128,132,145
+tests/tools/test_file_operations.py
+  s_e5369d415d379b::t_eee657568fa389 348-350,355-356,408
+docker-compose.yml
+  s_e5369d415d379b::t_eee657568fa389 37,71
+tests/tools/test_web_tools_config.py
+  s_e5369d415d379b::t_eee657568fa389 626,639
+tools/transcription_tools.py
+  s_e5369d415d379b::t_eee657568fa389 37,815
+gateway/run.py
+  s_e5369d415d379b::t_eee657568fa389 2787-2790,5868-5873,5876,5971-5978,5993-5994,8160-8188,8455,8472,11392,11416,11645,15022-15023,15025-15049,15053-15054,17284,17610
+hermes_cli/container_boot.py
+  s_e5369d415d379b::t_eee657568fa389 92-106
+tests/tools/test_file_operations_edge_cases.py
+  s_e5369d415d379b::t_eee657568fa389 295
+hermes_cli/nous_account.py
+  s_e5369d415d379b::t_eee657568fa389 305-308,330
+toolsets.py
+  s_e5369d415d379b::t_eee657568fa389 262-266,421
+hermes_cli/oneshot.py
+  s_e5369d415d379b::t_eee657568fa389 181-187,194-198
+tests/tools/test_kanban_tools.py
+  s_e5369d415d379b::t_eee657568fa389 1150-1151,1160,1441,1642
+hermes_cli/config.py
+  s_e5369d415d379b::t_eee657568fa389 1365-1366
+agent/auxiliary_client.py
+  s_e5369d415d379b::t_eee657568fa389 691-695
+hermes_cli/main.py
+  s_e5369d415d379b::t_eee657568fa389 11284-11289,11291-11296
+tests/gateway/test_platform_reconnect.py
+  s_e5369d415d379b::t_eee657568fa389 297-300,305-306,309,335,338-340
+tests/gateway/test_weixin.py
+  s_e5369d415d379b::t_eee657568fa389 862-863
+hermes_cli/providers.py
+  s_e5369d415d379b::t_eee657568fa389 50,242-243
+plugins/memory/hindsight/__init__.py
+  s_e5369d415d379b::t_eee657568fa389 41,1369,1374
+agent/conversation_loop.py
+  s_e5369d415d379b::t_eee657568fa389 1495,3097-3102,3245
+hermes_cli/model_switch.py
+  s_e5369d415d379b::t_eee657568fa389 1363-1365,1442,1529
+hermes_cli/plugins_cmd.py
+  s_e5369d415d379b::t_eee657568fa389 706
+run_agent.py
+  s_e5369d415d379b::t_eee657568fa389 3200-3201
+tests/gateway/test_extract_local_files.py
+  s_e5369d415d379b::t_eee657568fa389 339-341
+tools/file_tools.py
+  s_e5369d415d379b::t_eee657568fa389 120,122-127,934,936,1040
+tools/tts_tool.py
+  s_e5369d415d379b::t_eee657568fa389 52,168-192,194-196,209,212-221,226-233,237,370-371,373,918,951,996,1122-1123,1204,1324,2253,2256,2261,2267
+tools/file_operations.py
+  s_e5369d415d379b::t_eee657568fa389 675,684,993,1196,1245-1246
+plugins/kanban/dashboard/dist/index.js
+  s_e5369d415d379b::t_eee657568fa389 922,924,926,930-944,1813,1815-1820,1822-1824,2481,2577-2579
+gateway/platforms/whatsapp.py
+  s_e5369d415d379b::t_eee657568fa389 1142,1154
+agent/context_compressor.py
+  s_e5369d415d379b::t_eee657568fa389 43-44,50,52,1239-1242,1309,1473,1475,1489
+gateway/platforms/weixin.py
+  s_e5369d415d379b::t_eee657568fa389 1398-1403
+plugins/kanban/dashboard/plugin_api.py
+  s_e5369d415d379b::t_eee657568fa389 48,441,522,590,745,1879-1880,1882
+plugins/platforms/discord/adapter.py
+  s_e5369d415d379b::t_eee657568fa389 6096-6105
+agent/chat_completion_helpers.py
+  s_e5369d415d379b::t_eee657568fa389 1103,1106
+cli.py
+  s_e5369d415d379b::t_eee657568fa389 899,901,1591,11097,11100,11102-11112
+plugins/web/firecrawl/provider.py
+  s_e5369d415d379b::t_eee657568fa389 149,151,158
+agent/agent_init.py
+  s_e5369d415d379b::t_eee657568fa389 291,604-607,646,966-974
+tools/browser_supervisor.py
+  s_e5369d415d379b::t_eee657568fa389 499,504,515-519,521
+gateway/platforms/base.py
+  s_e5369d415d379b::t_eee657568fa389 1197,2668,2670
+hermes_cli/web_server.py
+  s_e5369d415d379b::t_eee657568fa389 3378-3381,3393-3394,3940-3946,4402
+hermes_cli/runtime_provider.py
+  s_e5369d415d379b::t_eee657568fa389 1519-1520
+tests/cli/test_cli_light_mode.py
+  s_e5369d415d379b::t_eee657568fa389 136
+tools/code_execution_tool.py
+  s_e5369d415d379b::t_eee657568fa389 1772-1776
+agent/transports/codex.py
+  s_e5369d415d379b::t_eee657568fa389 164-170,184-187
+tools/cronjob_tools.py
+  s_e5369d415d379b::t_eee657568fa389 791
+tools/managed_tool_gateway.py
+  s_e5369d415d379b::t_eee657568fa389 80,82-83,162,166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9ecb78330239d901d553ad114c5045f5c8aae2a2",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
