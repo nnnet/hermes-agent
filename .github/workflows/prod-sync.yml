@@ -193,3 +193,17 @@ jobs:
             --data-urlencode "text=${MSG}" \
             -d disable_web_page_preview=true \
             | head -c 200
+
+      # Make workflow status reflect reality. Previously the merge step
+      # had ``continue-on-error: true`` so a conflict produced a green
+      # ✓ overall status even though prod was not updated — misleading
+      # for anyone scanning the Actions tab. This terminal step exits
+      # non-zero whenever the prior steps detected a problem, so the
+      # GitHub-reported status matches what actually happened.
+      - name: Mark workflow failed if prod was not advanced
+        if: |
+          steps.merge.outputs.result == 'conflict'
+          || (steps.merge.outputs.result == 'clean' && steps.tests.outcome == 'failure')
+        run: |
+          echo "::error::prod sync did not advance prod — see prior steps for reason"
+          exit 1
