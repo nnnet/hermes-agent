@@ -69,8 +69,16 @@ class MCAdapter:
         inputs: Optional[dict[str, Any]] = None,
     ) -> WorkflowRunResult:
         mc = _import_mc()
-        # template_id is the MC pipeline id (int as string, or name)
-        args = {"pipeline_id": template_id, "wait_for_completion": False}
+        # MC's pipeline_id is an int. Coerce — chiefs / DSL routinely
+        # pass strings.
+        try:
+            pid: Any = int(template_id)
+        except (TypeError, ValueError):
+            pid = template_id  # let MC try to resolve by name
+        args: dict[str, Any] = {
+            "pipeline_id": pid,
+            "wait_for_completion": False,
+        }
         if inputs:
             args["inputs"] = inputs
         try:
@@ -82,18 +90,36 @@ class MCAdapter:
                 state="failed",
                 message=f"mc_pipeline_run raised: {e}",
             )
-        if not resp.get("success"):
+        # mc_tools handler returns either a tool_error JSON string OR a
+        # dict. tool_error strings come back from _handle_mc_pipeline_run
+        # as plain JSON strings (e.g. '{"error":"..."}'). Normalise.
+        if isinstance(resp, str):
+            try:
+                import json as _json
+                resp = _json.loads(resp)
+            except Exception:
+                return WorkflowRunResult(
+                    run_id="", backend=self.name, state="failed",
+                    message=f"mc_pipeline_run returned non-JSON: {resp[:200]}",
+                )
+        if not isinstance(resp, dict):
             return WorkflowRunResult(
-                run_id="",
-                backend=self.name,
-                state="failed",
+                run_id="", backend=self.name, state="failed",
+                message=f"mc_pipeline_run returned unexpected type "
+                        f"{type(resp).__name__}",
+            )
+        # mc_tools uses "ok" not "success". Fall back to either.
+        ok = resp.get("ok", resp.get("success"))
+        if ok is False:
+            return WorkflowRunResult(
+                run_id="", backend=self.name, state="failed",
                 message=resp.get("error", "mc_pipeline_run failed"),
             )
-        run_data = resp.get("run") or {}
+        run_data = resp.get("_raw") or resp.get("run") or {}
         return WorkflowRunResult(
-            run_id=str(run_data.get("run_id") or resp.get("run_id") or ""),
+            run_id=str(resp.get("run_id") or run_data.get("id") or ""),
             backend=self.name,
-            state=run_data.get("status", "queued"),
+            state=resp.get("status") or run_data.get("status", "queued"),
             message=resp.get("message"),
             extra=run_data,
         )
@@ -102,23 +128,42 @@ class MCAdapter:
 
     def status(self, run_id: str) -> WorkflowStatus:
         mc = _import_mc()
+        # MC's run_id is an int; chiefs hand back strings.
         try:
-            resp = mc._handle_mc_pipeline_status({"run_id": run_id})
+            rid: Any = int(run_id)
+        except (TypeError, ValueError):
+            rid = run_id
+        try:
+            resp = mc._handle_mc_pipeline_status({"run_id": rid})
         except Exception as e:
             return WorkflowStatus(
                 run_id=run_id, backend=self.name,
                 state="failed", error=f"mc_pipeline_status raised: {e}",
             )
-        if not resp.get("success"):
+        if isinstance(resp, str):
+            try:
+                import json as _json
+                resp = _json.loads(resp)
+            except Exception:
+                return WorkflowStatus(
+                    run_id=run_id, backend=self.name, state="failed",
+                    error=f"mc_pipeline_status returned non-JSON: {resp[:200]}",
+                )
+        if not isinstance(resp, dict):
             return WorkflowStatus(
-                run_id=run_id, backend=self.name,
-                state="failed",
+                run_id=run_id, backend=self.name, state="failed",
+                error=f"mc_pipeline_status returned unexpected type "
+                      f"{type(resp).__name__}",
+            )
+        ok = resp.get("ok", resp.get("success"))
+        if ok is False:
+            return WorkflowStatus(
+                run_id=run_id, backend=self.name, state="failed",
                 error=resp.get("error", "mc_pipeline_status failed"),
             )
-        run = resp.get("run") or {}
-        # MC has its own state vocabulary — pass it through but also
-        # provide a normalized state for the caller.
-        mc_state = run.get("status", "unknown")
+        # Run data can live at top level or under "_raw"/"run".
+        run = resp.get("_raw") or resp.get("run") or resp
+        mc_state = run.get("status", "unknown") if isinstance(run, dict) else "unknown"
         normalized = {
             "queued": "queued",
             "running": "running",
@@ -127,12 +172,14 @@ class MCAdapter:
             "cancelled": "cancelled",
             "canceled": "cancelled",
         }.get(mc_state, mc_state)
+        if not isinstance(run, dict):
+            run = {}
         return WorkflowStatus(
             run_id=run_id,
             backend=self.name,
             state=normalized,
-            current_node=run.get("current_step"),
-            history=run.get("steps", []) or [],
+            current_node=str(run.get("current_step")) if run.get("current_step") is not None else None,
+            history=run.get("steps_snapshot") or run.get("steps", []) or [],
             result=run.get("output") or run.get("result"),
             error=run.get("error"),
         )

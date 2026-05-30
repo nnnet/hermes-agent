@@ -89,31 +89,15 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
 ]
 
 
-# Assistant-only subset: same as _HERMES_CORE_TOOLS but strips the four
-# implementation tools that pull Hermes-main into doing project work
-# himself (terminal, execute_code, write_file, patch, process). Read-only
-# inspection stays in, since the assistant still needs to look at things
-# to brief his team or report to the user. Use this for operator chats
-# where Hermes must delegate via chief_spawn / mc_project_create instead
-# of imple­menting in-chat.
-_HERMES_ASSISTANT_TOOLS = [
-    t for t in _HERMES_CORE_TOOLS
-    if t not in {
-        "terminal",
-        "process",
-        "execute_code",
-        "write_file",
-        "patch",
-        # delegate_task is Hermes-implementation by proxy. Spawning a side
-        # subagent to mutate project artefacts has the same role-drift
-        # outcome as running execute_code directly — the assistant turns
-        # into a developer. Stripped 2026-05-23 after repeated incidents
-        # where Hermes-main reached for delegate_task to "fix" chief-side
-        # infrastructure issues (missing profile, stuck dispatch) instead
-        # of escalating via kanban_comment / kanban_block / tg_ask.
-        "delegate_task",
-    }
-]
+# Assistant role uses the SAME tool set as core. The operator decides
+# whether a task is simple (Hermes does it himself with terminal /
+# write_file / web_search / browser_* / etc.) or complex (Hermes calls
+# chief_spawn to delegate to a team). That judgement lives in the
+# prompt, not in a hard-coded filter — an earlier filter that stripped
+# `terminal`, `web_*`, `browser_*` etc. broke simple-task execution
+# (e.g. "create a Google sheet" needs `terminal` to call the
+# google-workspace skill's $GAPI commands; the strip made it unreachable).
+_HERMES_ASSISTANT_TOOLS = _HERMES_CORE_TOOLS
 
 
 # Core toolset definitions
@@ -248,6 +232,12 @@ TOOLSETS = {
         "tools": ["memory"],
         "includes": []
     },
+
+    "context_engine": {
+        "description": "Runtime tools exposed by the active context engine",
+        "tools": [],
+        "includes": []
+    },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",
@@ -300,22 +290,20 @@ TOOLSETS = {
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
-            # Chief sub-agent lifecycle (orchestrator-tier)
-            "chief_spawn", "chief_status", "chief_list", "chief_terminate",
-            # Mission Control pipelines + approvals + agent registry
-            "mc_pipeline_run", "mc_pipeline_list", "mc_pipeline_status",
-            "mc_pipeline_cancel",
-            "mc_exec_approve", "mc_exec_approve_list",
-            "mc_agents_list",
             # Backend-agnostic workflow orchestration (wraps mc_pipeline_*,
             # inline-runner via /api/v1/run-profile, future: langgraph etc.)
             "workflow_run", "workflow_status", "workflow_cancel",
             "workflow_list_templates",
-            # MC task lifecycle (create/get/list/update/comment/retry)
-            "mc_task_list", "mc_task_get", "mc_task_create",
-            "mc_task_update", "mc_task_comment", "mc_task_retry",
-            # Cost visibility
-            "mc_cost_summary",
+            # NOTE: mc_pipeline_*, mc_exec_approve*, mc_agents_list,
+            # mc_task_*, mc_project_create, mc_agent_create, mc_cost_summary
+            # are appended at runtime by the external nnnet/hermes-plugin-
+            # mc-tools plugin's register().
+            # NOTE: chief_spawn / chief_status / chief_list /
+            # chief_terminate / chief_answer_question / tg_send / tg_ask /
+            # tg_ask_status are appended at runtime by the external
+            # nnnet/hermes-plugin-chief-tools plugin's register().
+            # Both kept out of this static list so future upstream merges
+            # of toolsets.py stay conflict-free.
         ],
         "includes": [],
     },

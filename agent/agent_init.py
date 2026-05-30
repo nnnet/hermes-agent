@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
@@ -37,7 +36,6 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
-    get_model_context_length,
     is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -52,7 +50,6 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -183,6 +180,7 @@ def init_agent(
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
     user_id: str = None,
+    user_id_alt: str = None,
     user_name: str = None,
     chat_id: str = None,
     chat_name: str = None,
@@ -265,6 +263,7 @@ def init_agent(
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
+    agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
     agent._chat_id = chat_id
     agent._chat_name = chat_name
@@ -289,7 +288,7 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_agent_sdk_single_turn"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -339,6 +338,45 @@ def init_agent(
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass
+
+    # Pre-init agent.session_id so plugins that key per-session state
+    # off it (e.g. openrouter_custom's _alias_sessions marker) see the
+    # real id during resolve_runtime_model — not the empty string the
+    # downstream init block (lines 1044+) would otherwise assign too
+    # late. The downstream block becomes a no-op when session_id is
+    # already set (see its guard).
+    if not getattr(agent, "session_id", ""):
+        agent.session_start = datetime.now()
+        if session_id:
+            agent.session_id = session_id
+        else:
+            timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            agent.session_id = f"{timestamp_str}_{short_uuid}"
+
+    # ProviderProfile.resolve_runtime_model hook — gives plugins a chance
+    # to swap a stable picker-level pseudo-name for the actual catalog id
+    # before any downstream code (LLM client construction, prompt-cache
+    # bookkeeping, fallback chain) reads agent.model. Runs every turn
+    # because the gateway builds a fresh AIAgent per inbound message.
+    # Default profile method is identity, so this is a no-op outside the
+    # handful of plugins that surface masked aliases (e.g. openrouter_custom
+    # routing "best-free" to the current best :free OR id).
+    try:
+        from providers import get_provider_profile as _gpf_rtm
+        _rt_profile = _gpf_rtm(getattr(agent, "provider", "") or "")
+        if _rt_profile is not None:
+            _resolved_model = _rt_profile.resolve_runtime_model(
+                agent.model, session_id=getattr(agent, "session_id", "")
+            )
+            if _resolved_model and _resolved_model != agent.model:
+                logger.info(
+                    "ProviderProfile.resolve_runtime_model: %s -> %s (provider=%s)",
+                    agent.model, _resolved_model, agent.provider,
+                )
+                agent.model = _resolved_model
+    except Exception as exc:
+        logger.warning("resolve_runtime_model failed: %s", exc)
 
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
@@ -602,10 +640,15 @@ def init_agent(
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
         else:
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
-            # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = agent.provider == "anthropic"
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic
+            # AND the base URL points at native Anthropic (api.anthropic.com).
+            # Third-party Anthropic-compatible proxies (CLR-Gateway, LiteLLM,
+            # self-hosted) ship their own keys; sending an Anthropic OAuth token
+            # to those endpoints triggers 401 INVALID_USER_TOKEN.
+            _is_native_anthropic = (
+                agent.provider == "anthropic"
+                and "anthropic.com" in (base_url or "").lower()
+            )
             effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
 
             # MiniMax OAuth issues short-lived (~15-min) access tokens. The
@@ -644,7 +687,28 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            # Read anthropic-version override from config — supports both
+            # the top-level model: block and the per-provider providers.X:
+            # block. Native Anthropic provider keeps the SDK default; only
+            # custom endpoints typically need to pin a specific version.
+            _anth_version = None
+            try:
+                from hermes_cli.config import load_config as _load_anth_cfg
+                _cfg = _load_anth_cfg() or {}
+                _model_blk = _cfg.get("model") or {}
+                if isinstance(_model_blk, dict):
+                    _anth_version = (_model_blk.get("anthropic_version") or "").strip() or None
+                if not _anth_version:
+                    _prov_blk = (_cfg.get("providers") or {}).get(agent.provider) or {}
+                    if isinstance(_prov_blk, dict):
+                        _anth_version = (_prov_blk.get("anthropic_version") or "").strip() or None
+            except Exception:
+                _anth_version = None
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, base_url,
+                timeout=_provider_timeout,
+                anthropic_version=_anth_version,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -661,6 +725,32 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.api_mode == "claude_agent_sdk_single_turn":
+        # claude-agent-sdk — host CLI subscription auth.  No HTTP base URL,
+        # no API key: the official ``claude-agent-sdk`` Python package
+        # spawns the local ``claude`` CLI subprocess for every call and
+        # reads credentials from ``~/.claude/.credentials.json``.
+        #
+        # We instantiate ``ClaudeAgentSdkAuxiliaryClient`` directly —
+        # it implements the OpenAI client surface (``.chat.completions.create``)
+        # over single-turn ``query()`` calls, so the rest of the
+        # conversation loop sees the same interface as any other
+        # chat_completions provider.  No ``build_anthropic_client`` /
+        # ``_create_openai_client`` involvement.
+        from agent.auxiliary_client import (
+            AsyncClaudeAgentSdkAuxiliaryClient,
+            ClaudeAgentSdkAuxiliaryClient,
+        )
+        _cas_sync = ClaudeAgentSdkAuxiliaryClient(agent.model)
+        agent.client = AsyncClaudeAgentSdkAuxiliaryClient(_cas_sync)
+        agent._client_kwargs = {
+            "api_key": _cas_sync.api_key,
+            "base_url": _cas_sync.base_url,
+        }
+        agent.api_key = _cas_sync.api_key
+        agent.base_url = _cas_sync.base_url
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Agent SDK — host CLI)")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -736,8 +826,8 @@ def init_agent(
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Vercel AI Gateway attribution,
-                # Kimi User-Agent on non-kimi.com endpoints).
+                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
+                # endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -964,15 +1054,20 @@ def init_agent(
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
     
     # Session logging setup - auto-save conversation trajectories for debugging
-    agent.session_start = datetime.now()
-    if session_id:
-        # Use provided session ID (e.g., from CLI)
-        agent.session_id = session_id
-    else:
-        # Generate a new session ID
-        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
-        short_uuid = uuid.uuid4().hex[:6]
-        agent.session_id = f"{timestamp_str}_{short_uuid}"
+    # NOTE: this block became a no-op for the common path because
+    # session_id is now pre-initialized above (before resolve_runtime_model)
+    # so plugins like openrouter_custom can mark per-session state with
+    # the real id rather than an empty string.
+    if not getattr(agent, "session_id", ""):
+        agent.session_start = datetime.now()
+        if session_id:
+            # Use provided session ID (e.g., from CLI)
+            agent.session_id = session_id
+        else:
+            # Generate a new session ID
+            timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+            short_uuid = uuid.uuid4().hex[:6]
+            agent.session_id = f"{timestamp_str}_{short_uuid}"
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
@@ -1005,6 +1100,13 @@ def init_agent(
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
+    # Responses encrypted reasoning replay state.  Some OpenAI-compatible
+    # routes accept GPT-5 Responses requests but later reject replayed
+    # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
+    # When that happens we disable replay for the rest of the session and
+    # fall back to stateless continuity.  See
+    # agent/conversation_loop.py's invalid_encrypted_content retry branch.
+    agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
     
@@ -1112,6 +1214,8 @@ def init_agent(
                     # Thread gateway user identity for per-user memory scoping
                     if agent._user_id:
                         _init_kwargs["user_id"] = agent._user_id
+                    if agent._user_id_alt:
+                        _init_kwargs["user_id_alt"] = agent._user_id_alt
                     if agent._user_name:
                         _init_kwargs["user_name"] = agent._user_name
                     if agent._chat_id:
@@ -1189,6 +1293,18 @@ def init_agent(
     if not isinstance(_agent_section, dict):
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+    # Universal task-completion guidance toggle.  Default True.  Surfaced
+    # as a separate flag from tool_use_enforcement because the guidance
+    # applies to ALL models, not just the model families enforcement
+    # targets.
+    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+
+    # Local Python toolchain probe toggle.  Default True.  When False,
+    # the probe is skipped entirely (no subprocess calls, no system-prompt
+    # line).  Useful for users on exotic setups where the probe heuristics
+    # are noisy.
+    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
 
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -1451,7 +1567,6 @@ def init_agent(
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
@@ -1511,6 +1626,7 @@ def init_agent(
                 platform=agent.platform or "cli",
                 model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)

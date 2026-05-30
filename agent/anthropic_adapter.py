@@ -77,16 +77,16 @@ ADAPTIVE_EFFORT_MAP = {
 # xhigh as a distinct level between high and max; older adaptive-thinking
 # models (4.6) reject it with a 400.  Keep this substring list in sync with
 # the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7")
+_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
 
 # Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
 # is the only supported mode; 4.7 additionally forbids manual thinking entirely
 # and drops temperature/top_p/top_k).
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
+_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8")
 
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -94,6 +94,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.8
+    "claude-opus-4-8":   128_000,
     # Claude 4.7
     "claude-opus-4-7":   128_000,
     # Claude 4.6
@@ -645,6 +647,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    anthropic_version: Optional[str] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -755,6 +758,17 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Allow caller to pin the anthropic-version header (e.g. for a
+    # third-party Anthropic-compatible proxy that only understands a
+    # specific protocol version). SDK already sends a default; we only
+    # override when the caller asked for one. Merges into default_headers
+    # alongside anthropic-beta etc. set above.
+    if isinstance(anthropic_version, str) and anthropic_version.strip():
+        existing_headers = kwargs.get("default_headers") or {}
+        existing_headers = dict(existing_headers)
+        existing_headers["anthropic-version"] = anthropic_version.strip()
+        kwargs["default_headers"] = existing_headers
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -889,20 +903,6 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
-    return None
-
-
-def read_claude_managed_key() -> Optional[str]:
-    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if isinstance(primary_key, str) and primary_key.strip():
-                return primary_key.strip()
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
     return None
 
 
@@ -1254,10 +1254,16 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     print()
 
     try:
-        webbrowser.open(auth_url)
-        print("  (Browser opened automatically)")
+        from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        pass
+        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+
+    if _can_open_gui():
+        try:
+            webbrowser.open(auth_url)
+            print("  (Browser opened automatically)")
+        except Exception:
+            pass
 
     print()
     print("After authorizing, you'll see a code. Paste it below.")

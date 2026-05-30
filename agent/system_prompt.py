@@ -28,7 +28,6 @@ import os
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
-    ASSISTANT_DELEGATION_GUIDANCE,
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
@@ -38,6 +37,7 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
@@ -101,6 +101,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Universal task-completion / no-fabrication guidance.  Applied to ALL
+    # models regardless of tool_use_enforcement gating — the failure modes
+    # this targets (stopping after a stub; fabricating output when a real
+    # path is blocked) are not model-family specific.  Gated only by
+    # config.yaml ``agent.task_completion_guidance`` (default True) so
+    # users who want a leaner prompt can turn it off.
+    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
@@ -119,18 +128,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
-    # Гермес-role delegation guidance — fires for the main chat agent
-    # that has chief_spawn (or mc_project_create) but is NOT inside a
-    # kanban worker process. Tells Hermes he plays the Гермес role
-    # (personal assistant), routes non-trivial work to a Тимлид
-    # (TeamLead) and controls them, and that projects can stall/resume
-    # across chat sessions via the persistent kanban/MC board.
-    _can_delegate = (
-        "chief_spawn" in agent.valid_tool_names
-        or "mc_project_create" in agent.valid_tool_names
-    )
-    if _can_delegate and "kanban_show" not in agent.valid_tool_names:
-        tool_guidance.append(ASSISTANT_DELEGATION_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 
@@ -217,6 +214,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
+
+    # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
+    # something is non-default so the model can pick the right install
+    # strategy without discovering by failure.  Emits a single line; emits
+    # NOTHING when the environment is clean (no token cost).  Skipped
+    # entirely for remote terminal backends (the host's Python state is
+    # irrelevant when tools run inside docker/modal/ssh).  Gated by
+    # config.yaml ``agent.environment_probe`` (default True).
+    if getattr(agent, "_environment_probe", True):
+        try:
+            from tools.env_probe import get_environment_probe_line
+            _probe_line = get_environment_probe_line()
+            if _probe_line:
+                stable_parts.append(_probe_line)
+        except Exception:
+            # Probe failure must never block prompt build.
+            pass
 
     # Active-profile hint — names the Hermes profile the agent is running
     # under so it doesn't conflate ~/.hermes/skills/ (default profile) with

@@ -129,6 +129,36 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def resolve_runtime_model(self, model: str, **context: Any) -> str:
+        """Map a picker-level model name to the actual id sent to the API.
+
+        Default: return ``model`` unchanged.  Override in subclasses that
+        expose a stable pseudo-name in ``fetch_models()`` but route to a
+        rotating real catalog id at request time (e.g. ``openrouter_custom``
+        keeps a state.json with the current best free id picked by cron).
+
+        Called once at session start, after the agent's primary model has
+        been pinned but before the first LLM call.  ``context`` typically
+        carries ``session_id``; signatures may be extended in future to
+        pass agent metadata, but plugins should accept ``**context`` for
+        forward-compat.
+        """
+        return model
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return the default max_tokens cap for *model*.
+
+        Overrideable hook for providers that need per-model output caps —
+        e.g. a relay that fronts several upstream backends, each with a
+        different completion-token limit. The transport calls this when
+        the user hasn't set an explicit max_tokens.
+
+        Default: return self.default_max_tokens (the static profile field),
+        ignoring the model name. Override in a subclass to vary the cap
+        per-model.
+        """
+        return self.default_max_tokens
+
     def fetch_models(
         self,
         *,

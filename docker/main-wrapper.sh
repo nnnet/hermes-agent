@@ -1,4 +1,5 @@
 #!/command/with-contenv sh
+# shellcheck shell=sh
 # /opt/hermes/docker/main-wrapper.sh — wraps the container's CMD with
 # the same argument-routing logic the pre-s6 entrypoint.sh used. Runs
 # as /init's "main program" (Docker CMD) so it inherits stdin/stdout/
@@ -15,6 +16,8 @@
 # etc.  Without this, the gateway logs "No messaging platforms enabled"
 # at boot and the bot never connects, even though the env_file is loaded
 # and visible via ``docker exec hermes printenv``.
+# (Upstream phrasing 2026-05-30: /init scrubs env before invoking CMD,
+# so `#!/bin/sh` wrapper sees an empty environ — same root cause.)
 #
 # Routing:
 #   no args                       → exec `hermes` (the default)
@@ -27,8 +30,9 @@ set -e
 
 # Pin HOME to the hermes user's actual home dir so libraries that
 # expand ``~`` / ``$HOME`` (notably the gateway's per-bot-token lock
-# file at $HOME/.local/state/hermes/gateway-locks/) write into the
-# bind-mounted data dir and not into PID 1's leaked /root path.
+# file at $HOME/.local/state/hermes/gateway-locks/, and upstream's
+# discord lockfile under XDG_STATE_HOME) write into the bind-mounted
+# data dir and not into PID 1's leaked /root path.
 # Without this the gateway dies on TG connect with:
 #   PermissionError: [Errno 13] Permission denied:
 #   '/root/.local/state/hermes/gateway-locks/telegram-bot-token-*.lock'
