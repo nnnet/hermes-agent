@@ -2305,6 +2305,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")
+    # Provider-level outcome observation hook (streaming path mirror of
+    # interruptible_api_call's finally-block hook). Opt-in: only fires
+    # for providers that declare ``observe_outcome``. Used by
+    # openrouter_custom rotation strategies to track per-model health.
+    # Any failure here is swallowed so observation never breaks the
+    # request path.
+    try:
+        from providers import get_provider_profile  # local import
+        _profile = get_provider_profile(getattr(agent, "provider", None))
+        if _profile is not None and hasattr(_profile, "observe_outcome"):
+            _eb = api_kwargs.get("extra_body") or {}
+            _req_models = list(_eb.get("models") or [])
+            _profile.observe_outcome(
+                response=result.get("response"),
+                error=result.get("error"),
+                request_models=_req_models,
+            )
+    except Exception:
+        pass
     if result["error"] is not None:
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to
