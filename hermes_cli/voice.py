@@ -779,15 +779,20 @@ def speak_text(text: str) -> None:
     _debug(f"speak_text: TTS begin (paused_recording={paused_recording})")
 
     try:
-        from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+        from tools.tts_tool import text_to_speech_tool
 
-        # Single source of truth for TTS sanitization lives in tools.tts_tool —
-        # it strips markdown formatting, code blocks, URLs, horizontal rules,
-        # divider lines AND the unicode pictograph/emoji ranges (✅ ❌ 🚨 …)
-        # that TTS engines otherwise verbalize ("check mark", "cross mark").
-        # The on-screen message keeps its emojis; only the audio copy is cleaned.
         tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = _strip_markdown_for_tts(tts_text)
+        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
+        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
+        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
+        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
+        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
+        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
+        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
+        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
+        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+        tts_text = tts_text.strip()
         if not tts_text:
             return
 

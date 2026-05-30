@@ -1360,28 +1360,14 @@ def list_authenticated_providers(
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         else:
-            # Unified pathway (upstream): try the live cached fetcher first
-            # so providers with a dynamic catalog surface their real ids.
+            # Unified pathway — see Section 1 rationale. Fall back to the
+            # curated dict (with models.dev merge for preferred providers)
+            # when the live fetcher comes up empty.
             model_ids = cached_provider_model_ids(hermes_slug)
             if not model_ids:
-                # Fall back to the curated dict (with models.dev merge for
-                # preferred providers) when the live fetcher comes up empty.
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
-            # Plugin-injected overlays (model-providers/<name>/) don't have
-            # an entry in _PROVIDER_MODELS; fall through to provider_model_ids
-            # so ProviderProfile.fallback_models surfaces here too.
-            if not model_ids:
-                try:
-                    from hermes_cli.providers import _PLUGIN_INJECTED_OVERLAYS as _plug_set
-                except Exception:
-                    _plug_set = set()
-                if hermes_slug in _plug_set or pid in _plug_set:
-                    try:
-                        model_ids = provider_model_ids(hermes_slug) or []
-                    except Exception:
-                        model_ids = []
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1441,21 +1427,6 @@ def list_authenticated_providers(
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
 
-        # Special case: auth_type="none" — provider self-manages auth
-        # (e.g. claude-agent-sdk reads ~/.claude/.credentials.json via the
-        # local CLI; no env var, no auth.json entry). Without this branch
-        # the picker hides the provider even when the host CLI is signed
-        # in. We trust the profile to fail loudly at call time if the
-        # underlying mechanism is not actually available.
-        if not _cp_has_creds:
-            try:
-                from providers import get_provider_profile as _gpp_pick
-                _pp_pick = _gpp_pick(_cp.slug)
-                if _pp_pick and getattr(_pp_pick, "auth_type", "") == "none":
-                    _cp_has_creds = True
-            except Exception:
-                pass
-
         if not _cp_has_creds:
             continue
 
@@ -1468,19 +1439,10 @@ def list_authenticated_providers(
             except Exception:
                 _cp_model_ids = curated.get(_cp.slug, [])
         else:
-            # Unified pathway (upstream): cached fetcher first.
+            # Unified pathway — same as sections 1 and 2.
             _cp_model_ids = cached_provider_model_ids(_cp.slug)
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
-            # Fall back to ProviderProfile.fallback_models (set by plugins
-            # like model-providers/anthropic_custom). Without this the
-            # picker shows a 0-models canonical row and the user can't
-            # switch.
-            if not _cp_model_ids:
-                try:
-                    _cp_model_ids = provider_model_ids(_cp.slug) or []
-                except Exception:
-                    _cp_model_ids = []
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 
@@ -1557,13 +1519,6 @@ def list_authenticated_providers(
             # available, unless the provider explicitly opts out via
             # discover_models: false (e.g. dedicated endpoints that expose
             # the entire aggregator catalog via /models).
-            #
-            # When the config block declares an explicit ``models:`` list we
-            # treat it as the source of truth: live discovery becomes a
-            # SUPPLEMENT (added on top, deduped) rather than a REPLACEMENT.
-            # This prevents stale entries from a proxy's /v1/models cache
-            # (e.g. Meridian still listing claude-opus-4-6 alongside 4-7) from
-            # masking the curated set the user pinned in config.yaml.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1571,8 +1526,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            _config_pinned = bool(models_list)
-            if api_url and api_key and discover and not _config_pinned:
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1580,16 +1534,6 @@ def list_authenticated_providers(
                         models_list = live_models
                 except Exception:
                     pass
-            # Final dedup pass — preserves order, drops repeats from
-            # default_model + models: overlap or upstream catalogue noise.
-            if models_list:
-                _seen_dedup: set = set()
-                _deduped: list = []
-                for _m in models_list:
-                    if _m and _m not in _seen_dedup:
-                        _seen_dedup.add(_m)
-                        _deduped.append(_m)
-                models_list = _deduped
 
             results.append({
                 "slug": ep_name,

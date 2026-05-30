@@ -1660,82 +1660,6 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
-# ────────────────────────── F1 vague-desire gate ──────────────────────
-#
-# When the user's inbound message matches a "vague desire" pattern, we
-# prepend a high-priority system note to the context prompt telling the
-# agent to call `skill_view("orientation/desire-to-goal")` BEFORE doing
-# anything else. The prompt-builder's ASSISTANT_DELEGATION_GUIDANCE has
-# the same advice but in a large block that sonnet sometimes ignores
-# (observed in F1 calibration 2026-05-24 batch post-harvest-fix-002:
-# bot replied in 1 API call without skill_view on a textbook vague
-# build-pattern «Бот, торгующий крипту прибыльно»). The contextual
-# injection sits right next to the user's message and is much harder
-# to skip.
-#
-# This is GATEWAY-level enforcement — independent of prompt order or
-# compression. False positives are acceptable (extra clarification on
-# a borderline message is cheap); false negatives (skill missed on a
-# truly vague build-request) are expensive (drift / wrong artefact).
-VAGUE_DESIRE_PATTERNS = [
-    # Quality adverbs — "true goal hides in adverb" trap
-    r"\bприбыльн", r"\bэффективн", r"\bудобн", r"\bпонятн",
-    r"\bнадёжн", r"\bнадежн", r"\bкрасив", r"\bбыстр",
-    # Build-verb means (the proposed tool)
-    r"\bбот[\s,]", r"\bбота\b", r"\bдашборд", r"\bсайт",
-    r"\bмагазин", r"\bсистем", r"\bинструмент", r"\bсервис",
-    r"\bприложени", r"\bпайплайн", r"\bпроект", r"\bкоманд",
-    r"\bкурс\b", r"\bканал\b",
-    # Vague verbs
-    r"\bпомоги", r"\bспроектируй", r"\bпридумай", r"\bразработай",
-    r"\bоптимизируй", r"\bулучши", r"\bавтоматизируй",
-    r"\bразберись", r"\bспланируй", r"\bнайди мне\b",
-    r"\bподбирай", r"\bмониторь",
-    # Multi-step "сделай мне X" / "нужна штука для Y"
-    r"\bсделай мне\b", r"\bнужна штука\b", r"\bнужн[ао] что-то",
-    r"\bвыучи меня",
-]
-VAGUE_DESIRE_RE = re.compile("|".join(VAGUE_DESIRE_PATTERNS), re.IGNORECASE)
-
-# Sticky F1 gate state lives in tools.desire_to_goal_gate (shared with
-# registry.dispatch so it can hard-block side-effecting tools).
-
-DESIRE_TO_GOAL_PRELOAD_NOTE = (
-    "[ATTENTION — F1 vague-desire gate ACTIVE]\n"
-    "This conversation matched a vague-desire pattern. The desire-to-goal "
-    "protocol is in force for EVERY turn until the user confirms the "
-    "decomposition.\n\n"
-    "**If the «истинная цель / средство / место» decomposition has NOT "
-    "been shown yet**: your VERY FIRST action MUST be call "
-    "`skill_view(name=\"orientation/desire-to-goal\")` and follow its "
-    "`ПЕРВЫЙ ход` section — output the 4-7 line decomposition and ask "
-    "the user to confirm.\n\n"
-    "**If decomposition was shown but user hasn't confirmed yet**: wait "
-    "for explicit confirmation. Do NOT proceed to forbidden actions "
-    "below.\n\n"
-    "**If decomposition was shown AND user confirmed**: you may proceed; "
-    "decompose into self vs delegate (see ASSISTANT_DELEGATION_GUIDANCE) "
-    "and act accordingly.\n\n"
-    "FORBIDDEN until decomposition is shown AND user confirms:\n"
-    "- numbered solution variants of any kind (A/B/C, table of options, "
-    "list of strategies / tools / approaches with concrete details)\n"
-    "- config questions about the proposed means (which exchange? which "
-    "stack? paper or real? which CMS? which API? which framework?)\n"
-    "- direct execution: writing files, calling terminal, spawning chiefs\n"
-    "- referencing ANY user-specific state (existing code, accounts, "
-    "balances, levels, prior projects, schedules, settings) AS IF IT "
-    "EXISTS — unless verified in THIS session via `read_file` / "
-    "`terminal` / `gh` API / `hindsight_recall` and you have concrete "
-    "evidence to cite. Without evidence: either ASK, or phrase "
-    "conditionally («если есть — могу проверить»). Generic rule, applies "
-    "to any domain.\n\n"
-    "Skip THIS gate ONLY if the user's message is a one-shot concrete "
-    "command with a clear single artefact (e.g. «удали репозиторий X», "
-    "«напомни мне завтра в 9»). For those, your decomposition would be "
-    "trivial and a ritual — just execute."
-)
-
-
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1806,14 +1730,6 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
-        # Last successfully-resolved (non-empty) model, keyed by session. Used
-        # as a fallback when a fresh config read transiently returns an empty
-        # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
-        # recovery turn). Without this, the agent is built with model="" and
-        # every API call fails HTTP 400 "No models provided" — the session goes
-        # silent until the user manually re-sends. See #35314. ``"*"`` holds a
-        # process-wide last-known-good for sessions seen for the first time.
-        self._last_resolved_model: Dict[str, str] = {}
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -2121,37 +2037,6 @@ class GatewayRunner:
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
-
-    @staticmethod
-    def _default_voice_mode() -> str:
-        """Return the per-chat voice-reply mode default for **new** chats.
-
-        Operators can change the out-of-the-box behavior of every newly
-        seen Telegram/Discord/Slack/etc chat by setting
-        ``HERMES_VOICE_MODE_DEFAULT`` in ``~/.hermes/.env``:
-
-          * ``off``         — text replies only (the stock default; safe).
-          * ``voice_only``  — replies are spoken as audio messages only.
-          * ``all``         — replies are sent as text **and** spoken
-                              (the ``/voice tts`` command's mode).
-
-        Per-chat overrides via ``/voice on|off|tts`` still take
-        precedence — this env var only seeds the initial state for a
-        chat the gateway has never seen before.  Unknown values fall
-        back to ``"off"`` and a warning is logged once at first use.
-        """
-        raw = (os.getenv("HERMES_VOICE_MODE_DEFAULT", "") or "").strip().lower()
-        if not raw:
-            return "off"
-        if raw in {"off", "voice_only", "all"}:
-            return raw
-        # Lazy import to avoid pulling logging into staticmethod scope.
-        logger.warning(
-            "HERMES_VOICE_MODE_DEFAULT=%r is not a recognised voice mode "
-            "(expected off / voice_only / all). Falling back to 'off'.",
-            raw,
-        )
-        return "off"
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -2603,32 +2488,6 @@ class GatewayRunner:
             except Exception:
                 pass
 
-        # Final safety net (#35314): if resolution still produced an empty
-        # model — e.g. a transient config-cache miss during a post-interrupt
-        # recovery turn returned an empty user_config — reuse the last model we
-        # successfully resolved for this session (or, failing that, the most
-        # recent one resolved process-wide). Building an agent with model=""
-        # makes every API call fail HTTP 400 "No models provided" and the
-        # session goes silent until the user manually re-sends. ``getattr``
-        # guards against bare test runners built via ``object.__new__``.
-        _last_good = getattr(self, "_last_resolved_model", None)
-        if _last_good is not None:
-            if not model:
-                _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
-                if _recovered:
-                    logger.warning(
-                        "Empty model resolved for session=%s — recovering "
-                        "last-known-good model %s (config read likely returned "
-                        "empty; see #35314)",
-                        resolved_session_key or "", _recovered,
-                    )
-                    model = _recovered
-            elif model:
-                # Cache the good resolution for future recovery turns.
-                if resolved_session_key:
-                    _last_good[resolved_session_key] = model
-                _last_good["*"] = model
-
         return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
@@ -2925,12 +2784,10 @@ class GatewayRunner:
         """Mark a queued platform as paused — keep it in ``_failed_platforms``
         but stop the reconnect watcher from hammering it.
 
-        Used by ``/platform pause <name>`` for manual operator intervention.
-        Paused platforms are surfaced in ``/platform list`` and resumed with
-        ``/platform resume <name>``.  Note: the reconnect watcher does NOT
-        auto-pause — retryable (network/DNS) failures keep retrying at the
-        backoff cap indefinitely so a transient outage self-heals without
-        manual intervention.
+        Used by the circuit breaker after ``_PAUSE_AFTER_FAILURES`` consecutive
+        retryable failures, and by ``/platform pause <name>`` for manual
+        intervention.  Paused platforms are surfaced in ``/platform list``
+        and resumed with ``/platform resume <name>``.
         """
         info = getattr(self, "_failed_platforms", {}).get(platform)
         if info is None:
@@ -6008,17 +5865,15 @@ class GatewayRunner:
         """Background task that periodically retries connecting failed platforms.
 
         Uses exponential backoff: 30s → 60s → 120s → 240s → 300s (cap).
-        Retryable failures (network/DNS blips) keep retrying at the backoff
-        cap indefinitely — they self-heal once connectivity returns, so a
-        transient outage never requires manual intervention. Non-retryable
-        failures (bad auth, etc.) drop out of the queue immediately. The
-        circuit breaker (``_pause_failed_platform`` / ``/platform pause``)
-        remains available for manual operator control via ``/platform list``
-        and ``/platform resume <name>``, but is no longer triggered
-        automatically — auto-pausing a recovered platform was the cause of
-        bots silently staying dead after a transient DNS failure.
+        Retryable failures keep retrying at the backoff cap indefinitely
+        — but if a platform fails ``_PAUSE_AFTER_FAILURES`` times in a row
+        without ever succeeding, it is *paused*: kept in the retry queue
+        but no longer hammered.  The user surfaces it with ``/platform list``
+        and resumes it with ``/platform resume <name>``.  Non-retryable
+        failures (bad auth, etc.) still drop out of the queue immediately.
         """
         _BACKOFF_CAP = 300  # 5 minutes max between retries
+        _PAUSE_AFTER_FAILURES = 10  # circuit-breaker threshold
 
         await asyncio.sleep(10)  # initial delay — let startup finish
         while self._running:
@@ -6113,14 +5968,14 @@ class GatewayRunner:
                             "Reconnect %s failed, next retry in %ds",
                             platform.value, backoff,
                         )
-                        # Retryable failures (network/DNS blips) keep retrying
-                        # at the backoff cap indefinitely — they self-heal once
-                        # connectivity returns. We do NOT auto-pause them: a
-                        # transient outage must never require manual `/platform
-                        # resume` to recover. Non-retryable failures (bad auth,
-                        # etc.) already drop out of the queue via the
-                        # `not fatal_error_retryable` branch above, so anything
-                        # reaching here is by definition retryable.
+                        if attempt >= _PAUSE_AFTER_FAILURES:
+                            self._pause_failed_platform(
+                                platform,
+                                reason=(
+                                    adapter.fatal_error_message
+                                    or "failed to reconnect"
+                                ),
+                            )
                 except Exception as e:
                     self._update_platform_runtime_status(
                         platform.value,
@@ -6135,9 +5990,8 @@ class GatewayRunner:
                         "Reconnect %s error: %s, next retry in %ds",
                         platform.value, e, backoff,
                     )
-                    # A raised exception during reconnect (connect timeout, DNS
-                    # resolution failure, etc.) is inherently transient — keep
-                    # retrying at the backoff cap rather than auto-pausing.
+                    if attempt >= _PAUSE_AFTER_FAILURES:
+                        self._pause_failed_platform(platform, reason=str(e))
 
             # Check every 10 seconds for platforms that need reconnection
             for _ in range(10):
@@ -8303,17 +8157,35 @@ class GatewayRunner:
                     message_text,
                     audio_paths,
                 )
-                # NOTE: Previously (and again in upstream 2026-05-30), when
-                # transcription failed (e.g. no STT provider configured),
-                # the gateway also emitted a hardcoded English notice via
-                # `_stt_adapter.send()`. That bypassed the LLM and produced
-                # two replies — one pre-canned English clip (TTS spoke it
-                # aloud!) and one correct, localized LLM reply from the
-                # enriched message text. The enrichment step above already
-                # appends a localized failure note to the prompt, so the
-                # LLM produces a single coherent reply in the user's
-                # language. The hardcoded send has therefore been removed.
-                # See BUG-3 in the deployment bug tracker for details.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(marker in message_text for marker in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`uv pip install faster-whisper` in the Hermes venv; "
+                                "`pip install faster-whisper` also works if pip is on PATH) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id,
+                                _stt_msg,
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
 
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
@@ -8580,7 +8452,7 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-
+        
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
@@ -8597,35 +8469,7 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-
-        # F1 vague-desire gate — STICKY per session, ENFORCED at tool-dispatch.
-        # See tools.desire_to_goal_gate for shared state used by both this
-        # injection point AND registry.dispatch (which blocks side-effecting
-        # tools until `skill_view(desire-to-goal)` has fired).
-        try:
-            from tools import desire_to_goal_gate as f1_gate
-            sid = session_entry.session_id
-            text_match = bool(
-                event.text and VAGUE_DESIRE_RE.search(event.text)
-            )
-            sticky_active = f1_gate.is_active(sid)
-            if text_match and not sticky_active:
-                f1_gate.activate(sid)
-            if text_match or sticky_active:
-                context_prompt = (
-                    DESIRE_TO_GOAL_PRELOAD_NOTE + "\n\n" + context_prompt
-                )
-                logger.info(
-                    "[F1 gate] active for session=%s "
-                    "(text_match=%s, sticky=%s, skill_loaded=%s)",
-                    sid[:12] if sid else "?",
-                    text_match, sticky_active,
-                    f1_gate.has_skill_loaded(sid),
-                )
-            f1_gate.housekeep()
-        except Exception:
-            logger.debug("F1 vague-desire gate check failed", exc_info=True)
-
+        
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
@@ -11545,7 +11389,7 @@ class GatewayRunner:
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
-            mode = self._voice_mode.get(voice_key, self._default_voice_mode())
+            mode = self._voice_mode.get(voice_key, "off")
             labels = {
                 "off": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
@@ -11569,7 +11413,7 @@ class GatewayRunner:
             return t("gateway.voice.status_mode", label=labels.get(mode, mode))
         else:
             # Toggle: off → on, on/all → off
-            current = self._voice_mode.get(voice_key, self._default_voice_mode())
+            current = self._voice_mode.get(voice_key, "off")
             if current == "off":
                 self._voice_mode[voice_key] = "voice_only"
                 self._save_voice_modes()
@@ -11798,10 +11642,7 @@ class GatewayRunner:
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(
-            self._voice_key(event.source.platform, chat_id),
-            self._default_voice_mode(),
-        )
+        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
@@ -15177,36 +15018,40 @@ class GatewayRunner:
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
-                    # Pass the transcript through as a plain quoted line.
-                    # Earlier wording ("The user sent a voice message~
-                    # Here's what they said: ...") was being treated by
-                    # the LLM as a meta-instruction to *talk about* the
-                    # voice mode rather than reply to its content — and,
-                    # combined with old failure templates that mentioned
-                    # "no STT provider", contaminated future turns so
-                    # the model kept volunteering STT-setup advice even
-                    # after STT started working.
-                    enriched_parts.append(f'"{transcript}"')
+                    enriched_parts.append(
+                        f'[The user sent a voice message~ '
+                        f'Here\'s what they said: "{transcript}"]'
+                    )
                 else:
                     error = result.get("error", "unknown error")
-                    # All failure branches: a single, minimal, neutral
-                    # note. Do NOT mention "no STT provider configured",
-                    # "setup instructions", or "hermes-agent-setup skill"
-                    # — those phrases poisoned future turns. Do NOT
-                    # claim a direct message was sent: the gateway no
-                    # longer sends one (see commit history for BUG-3).
-                    # Cause is logged for operator diagnosis but kept out
-                    # of the LLM-visible prompt.
-                    logger.info(
-                        "Voice transcription failed for %s: %s", path, error
-                    )
-                    enriched_parts.append(
-                        "[voice message could not be transcribed]"
-                    )
+                    if (
+                        "No STT provider" in error
+                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
+                    ):
+                        _no_stt_note = (
+                            "[The user sent a voice message but I can't listen "
+                            "to it right now — no STT provider is configured. "
+                            "A direct message has already been sent to the user "
+                            "with setup instructions."
+                        )
+                        if self._has_setup_skill():
+                            _no_stt_note += (
+                                " You have a skill called hermes-agent-setup "
+                                "that can help users configure Hermes features "
+                                "including voice, tools, and more."
+                            )
+                        _no_stt_note += "]"
+                        enriched_parts.append(_no_stt_note)
+                    else:
+                        enriched_parts.append(
+                            "[The user sent a voice message but I had trouble "
+                            f"transcribing it~ ({error})]"
+                        )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
-                    "[voice message could not be transcribed]"
+                    "[The user sent a voice message but something went wrong "
+                    "when I tried to listen to it~ Let them know!]"
                 )
 
         if enriched_parts:
@@ -17436,7 +17281,7 @@ class GatewayRunner:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
                         _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                             r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                             r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                             r'txt|csv|apk|ipa))',
@@ -17762,7 +17607,7 @@ class GatewayRunner:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                                 r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                                 r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                                 r'txt|csv|apk|ipa))',

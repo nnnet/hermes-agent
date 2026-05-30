@@ -4125,26 +4125,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # Workflow bridge — external orchestrator (MC pipeline node,
-            # LangGraph, n8n) hands a task to a Hermes profile. See
-            # gateway/run_profile_endpoint.py for full rationale.
-            try:
-                from gateway.run_profile_endpoint import (
-                    handle_run_profile,
-                    handle_get_run_profile,
-                )
-                self._app.router.add_post(
-                    "/api/v1/run-profile", handle_run_profile
-                )
-                self._app.router.add_get(
-                    "/api/v1/run-profile/{run_id}", handle_get_run_profile
-                )
-            except Exception as _e:
-                logger.warning(
-                    "[%s] /api/v1/run-profile not registered: %s",
-                    self.name, _e,
-                )
-
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

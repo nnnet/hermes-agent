@@ -3375,14 +3375,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
     don't want LAN hosts guessing tokens.
 
-    Explicit non-loopback bind (``--host 0.0.0.0``, ``--host ::``, or a
-    specific address such as a Tailscale/LAN IP, always with
-    ``--insecure``): allow any peer. The operator explicitly opted into
-    non-loopback exposure, so the loopback-only peer restriction does not
-    apply. DNS-rebinding is still blocked by the Host/Origin guard in
-    :func:`_ws_host_origin_is_allowed`, which mirrors the HTTP layer and
-    requires the Host header to match the bound interface — the same
-    defence ``_is_accepted_host`` applies to non-loopback HTTP requests.
+    All-interfaces insecure bind (``--host 0.0.0.0 --insecure`` or
+    ``--host :: --insecure``): allow any peer. The operator explicitly
+    opted into LAN/public exposure in this mode, so the loopback-only peer
+    restriction should not apply.
 
     Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
     (enabled when the OAuth gate is active so cookies can pick up
@@ -3394,13 +3390,8 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """
     if getattr(app.state, "auth_required", False):
         return True
-    # Any explicit non-loopback bind (0.0.0.0, ::, or a specific LAN /
-    # Tailscale address) means the operator opted into non-loopback
-    # access via --insecure.  The loopback-only peer gate only applies to
-    # an actual loopback bind; otherwise the WS handshake is rejected even
-    # though same-bind HTTP requests pass _is_accepted_host.
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    bound_host = getattr(app.state, "bound_host", "")
+    if bound_host in {"0.0.0.0", "::"}:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -3946,14 +3937,13 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",         "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large",   "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "midnight",        "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",           "label": "Ember",               "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",            "label": "Mono",                "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk",       "label": "Cyberpunk",           "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",            "label": "Rosé",                "description": "Soft pink and warm ivory — easy on the eyes"},
-    {"name": "mission-control", "label": "Mission Control",     "description": "Flat dark — palette and chrome copied from Mission Control"},
+    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
+    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
 
 
@@ -4405,24 +4395,11 @@ async def get_dashboard_plugins():
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-
-    # The /plugins UI Hide-from-sidebar button POSTs the agent-plugin path
-    # (e.g. "image_gen/openai") into dashboard.hidden_plugins, while
-    # dashboard manifests carry their own short ``name`` field ("openai").
-    # A literal in-list check misses the suffix match, so toggling Hide for
-    # any category-namespaced plugin had no visible effect. Treat trailing-
-    # segment matches as hits too.
-    def _is_hidden(plugin_name: str) -> bool:
-        if plugin_name in hidden:
-            return True
-        suffix = "/" + plugin_name
-        return any(isinstance(h, str) and h.endswith(suffix) for h in hidden)
-
     # Strip internal fields before sending to frontend and filter out hidden.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if not _is_hidden(p["name"])
+        if p["name"] not in hidden
     ]
 
 

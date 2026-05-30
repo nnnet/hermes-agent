@@ -787,10 +787,8 @@ def AIAgent(*args, **kwargs):
 
 
 def get_tool_definitions(*args, **kwargs):
-    from hermes_cli.mcp_startup import wait_for_mcp_discovery
     from model_tools import get_tool_definitions as _get_tool_definitions
 
-    wait_for_mcp_discovery()
     return _get_tool_definitions(*args, **kwargs)
 
 
@@ -898,12 +896,9 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
     try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+        from tools.mcp_tool import discover_mcp_tools
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="termux-cli-mcp-discovery",
-        )
+        discover_mcp_tools()
     except Exception:
         logger.debug(
             "MCP tool discovery failed at deferred CLI startup",
@@ -1542,16 +1537,8 @@ def _query_osc11_background() -> str | None:
     Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
     within a few ms.  We wait up to 100ms total before giving up.
     Returns "#RRGGBB" or None on timeout / non-tty.
-
-    Skipped over SSH: the round-trip routinely exceeds our 100ms budget, so a
-    late reply lands after prompt_toolkit has grabbed the tty — its payload
-    leaks in as typed text and the BEL terminator reads as Ctrl+G (open
-    editor), trapping the user in a stray editor. Remote sessions fall back to
-    COLORFGBG / env hints / the dark default instead.
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return None
-    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return None
     try:
         import termios
@@ -1600,11 +1587,8 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
-        # TCSAFLUSH discards any unread input as it restores the original
-        # attributes — scrubs a slow/partial OSC 11 reply out of the tty
-        # buffer before prompt_toolkit can read it as keystrokes.
         try:
-            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+            termios.tcsetattr(fd, termios.TCSANOW, old)
         except Exception:
             pass
 
@@ -4886,10 +4870,6 @@ class HermesCLI:
 
         if not self._ensure_runtime_credentials():
             return False
-
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
-
-        wait_for_mcp_discovery()
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
@@ -11114,16 +11094,22 @@ class HermesCLI:
             return
         self._voice_tts_done.clear()
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
 
-            # Strip markdown, code, URLs, horizontal rules, divider lines and
-            # the unicode pictograph/emoji ranges (✅ ❌ 🚨 …) that TTS engines
-            # otherwise verbalize literally. Single source of truth is
-            # tools.tts_tool._strip_markdown_for_tts — keep this site in sync
-            # with hermes_cli/voice.py:speak_text by routing through it.
+            # Strip markdown and non-speech content for cleaner TTS
             tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = _strip_markdown_for_tts(tts_text)
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
+            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
+            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
+            tts_text = tts_text.strip()
             if not tts_text:
                 return
 

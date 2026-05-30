@@ -287,12 +287,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
-    # NOTE: resolve_runtime_model is invoked in agent_init right after the
-    # provider-level normalize_model_for_provider() pass, so by the time we
-    # reach this code path agent.model is already the real catalog id even
-    # for continuation sessions (where this conversation-loop block returns
-    # early at line 183).
-
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
@@ -1398,21 +1392,6 @@ def run_conversation(
                             error_details.append("response is None")
                         else:
                             error_details.append("Bedrock response invalid (no output or choices)")
-                elif agent.api_mode == "claude_agent_sdk_single_turn":
-                    # The SDK transport returns the raw drained message
-                    # list; an empty list means the CLI subprocess
-                    # produced no AssistantMessage / ResultMessage at
-                    # all, which is a hard failure (auth dropped, CLI
-                    # crash, etc.) and should route to the fallback
-                    # chain just like an empty Anthropic response.
-                    if response is None:
-                        response_invalid = True
-                        error_details.append("response is None")
-                    elif not isinstance(response, list) or not response:
-                        response_invalid = True
-                        error_details.append(
-                            "Claude Agent SDK response is empty (no messages produced)"
-                        )
                 else:
                     _ctv = agent._get_transport()
                     if not _ctv.validate_response(response):
@@ -1513,8 +1492,7 @@ def run_conversation(
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
-                        if agent._has_pending_fallback():
-                            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -1585,14 +1563,6 @@ def run_conversation(
                     _bt_fr = agent._get_transport()
                     _bedrock_result = _bt_fr.normalize_response(response)
                     finish_reason = _bedrock_result.finish_reason
-                elif agent.api_mode == "claude_agent_sdk_single_turn":
-                    # SDK response is a drained list of Message objects.
-                    # The transport's normalize_response inspects the
-                    # trailing ResultMessage (if any) for stop_reason
-                    # and falls back to inferring from tool_use blocks.
-                    _sdk_fr = agent._get_transport()
-                    _sdk_finish_result = _sdk_fr.normalize_response(response)
-                    finish_reason = _sdk_finish_result.finish_reason
                 else:
                     _cc_fr = agent._get_transport()
                     _finish_result = _cc_fr.normalize_response(response)
@@ -3124,17 +3094,12 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
-                    # Try fallback before aborting — a different provider may
-                    # not have the same issue (rate limit, auth, etc.). Only
-                    # announce the attempt when a fallback chain actually
-                    # exists; otherwise "trying fallback..." is a lie and the
-                    # session looks like it's recovering when it's about to
-                    # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
-                        if classified.reason == FailoverReason.content_policy_blocked:
-                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
-                        else:
-                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    # Try fallback before aborting — a different provider
+                    # may not have the same issue (rate limit, auth, etc.)
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
+                    else:
+                        agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -3277,8 +3242,7 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    if agent._has_pending_fallback():
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                    agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0

@@ -79,14 +79,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
     "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
-    # Claude Agent SDK — official Anthropic library wrapping the local
-    # Claude Code CLI. Used by provider=claude-agent-sdk to delegate
-    # inference to the host's subscription auth (reads
-    # ~/.claude/.credentials.json) without an HTTP proxy in the chain.
-    # The package bundles the `claude` CLI binary, so no separate
-    # install is required for the CLI itself. Pinned to match the
-    # pyproject extra (see [project.optional-dependencies] block).
-    "provider.claude-agent-sdk": ("claude-agent-sdk==0.2.82",),
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,

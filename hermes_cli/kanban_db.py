@@ -73,7 +73,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import logging
 import os
 import re
 import secrets
@@ -397,41 +396,6 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "workspaces"
 
 
-def attachments_root(board: Optional[str] = None) -> Path:
-    """Return the directory under which task file attachments are stored.
-
-    Mirrors :func:`worker_logs_dir` / :func:`workspaces_root`: anchored
-    per-board so attachments don't leak between projects. Each task gets
-    its own ``<root>/.../attachments/<task_id>/`` subdirectory.
-
-    ``HERMES_KANBAN_ATTACHMENTS_ROOT`` pins the path directly (highest
-    precedence) for tests and unusual deployments.
-
-    ``default`` uses ``<root>/kanban/attachments/``; other boards use
-    ``<root>/kanban/boards/<slug>/attachments/``.
-
-    Workers (which run with full file-tool access) read attached files
-    by the absolute path surfaced in :func:`build_worker_context`. On the
-    local terminal backend — the default for kanban — that path resolves
-    directly. Remote backends (Docker/Modal) need this directory mounted;
-    see the kanban docs.
-    """
-    override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
-    if slug is None:
-        slug = get_current_board()
-    if slug == DEFAULT_BOARD:
-        return kanban_home() / "kanban" / "attachments"
-    return board_dir(slug) / "attachments"
-
-
-def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
-    """Return the per-task attachment directory ``<root>/<task_id>/``."""
-    return attachments_root(board=board) / task_id
-
-
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -511,20 +475,12 @@ def write_board_metadata(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     archived: Optional[bool] = None,
-    meta_extra: Optional[dict] = None,
     default_workdir: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
     Preserves any existing fields not mentioned in the call. Sets
     ``created_at`` on first write. Returns the resulting metadata dict.
-
-    ``meta_extra`` is a free-form dict whose keys are merged into the
-    metadata file alongside the known fields. Used by feature layers
-    (e.g. ``tools/chief_tools.py``) to attach domain metadata like
-    ``kind``, ``lifetime``, ``parent_chief_id`` without requiring a
-    schema migration. Keys colliding with reserved names (``slug``,
-    ``db_path``) are dropped silently to prevent corruption.
     """
     slug = _normalize_board_slug(board) or DEFAULT_BOARD
     meta = read_board_metadata(slug)
@@ -541,14 +497,6 @@ def write_board_metadata(
         meta["color"] = str(color)
     if archived is not None:
         meta["archived"] = bool(archived)
-    if meta_extra:
-        # Reserved keys: slug is rebound from filesystem on read; db_path is
-        # derived. Letting callers overwrite them would corrupt list_boards().
-        _RESERVED = {"slug", "db_path"}
-        for k, v in meta_extra.items():
-            if k in _RESERVED:
-                continue
-            meta[k] = v
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
     if not meta.get("created_at"):
@@ -570,7 +518,6 @@ def create_board(
     description: Optional[str] = None,
     icon: Optional[str] = None,
     color: Optional[str] = None,
-    meta_extra: Optional[dict] = None,
     default_workdir: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
@@ -578,9 +525,6 @@ def create_board(
     Returns the resulting metadata. Raises :class:`ValueError` for a
     malformed slug; returns the existing metadata (not an error) if the
     board already exists — matching ``mkdir -p`` semantics.
-
-    ``meta_extra`` — forward to :func:`write_board_metadata` for attaching
-    domain metadata (e.g. chief lifecycle fields).
     """
     normed = _normalize_board_slug(slug)
     if not normed:
@@ -591,7 +535,6 @@ def create_board(
         description=description,
         icon=icon,
         color=color,
-        meta_extra=meta_extra,
         default_workdir=default_workdir,
     )
     # Touch the DB so list_boards() sees it immediately.
@@ -688,264 +631,6 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         import shutil
         shutil.rmtree(d)
         return {"slug": normed, "action": "deleted", "new_path": ""}
-
-
-# ---------------------------------------------------------------------------
-# Archived-board helpers
-# ---------------------------------------------------------------------------
-
-def archived_boards_root() -> Path:
-    """Return ``<root>/kanban/boards/_archived``.
-
-    Why: Dashboard archive viewer needs a single entry point to list every
-    archived board folder (parallel to :func:`boards_root`).
-    What: Returns the directory where archived board folders live.
-    Test: Assert it equals ``boards_root() / "_archived"``.
-    """
-    return boards_root() / "_archived"
-
-
-def list_archived_boards() -> list[dict]:
-    """Enumerate archived board directories.
-
-    Why: Dashboard archive viewer needs metadata for every archived board
-    so the user can pick which to restore. Folders are named ``<slug>-<ts>``
-    (timestamp-suffixed by :func:`remove_board`); we reverse-engineer the
-    base slug + the timestamp from the directory name.
-    What: Returns a list of ``{slug, archived_dir, archived_at, name, ...}``
-    sorted by most-recently-archived first.
-    Test: Archive a board, call this — expect 1 entry with the right slug
-    and ``archived_dir`` matching the on-disk path.
-    """
-    root = archived_boards_root()
-    if not root.is_dir():
-        return []
-    out: list[dict] = []
-    for child in root.iterdir():
-        if not child.is_dir():
-            continue
-        name = child.name
-        # Parse "<slug>-<timestamp>[-<n>]". Take the trailing digits-only
-        # token as the timestamp, the rest as the slug; collision-suffixed
-        # entries (slug-ts-1) keep the same parsing.
-        parts = name.rsplit("-", 1)
-        archived_at: Optional[int] = None
-        base_slug = name
-        if len(parts) == 2:
-            head, tail = parts
-            if tail.isdigit() and len(tail) >= 9:  # epoch seconds, ~10 digits
-                base_slug = head
-                try:
-                    archived_at = int(tail)
-                except ValueError:
-                    archived_at = None
-            else:
-                # Maybe "<slug>-<ts>-<n>"; try the previous segment.
-                inner = head.rsplit("-", 1)
-                if len(inner) == 2 and inner[1].isdigit() and len(inner[1]) >= 9:
-                    base_slug = inner[0]
-                    try:
-                        archived_at = int(inner[1])
-                    except ValueError:
-                        archived_at = None
-        meta: dict[str, Any] = {}
-        try:
-            mp = child / "board.json"
-            if mp.exists():
-                raw = json.loads(mp.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    meta = raw
-        except (OSError, json.JSONDecodeError):
-            meta = {}
-        # Count tasks in the archived DB so the UI can show task badges
-        # ("12 tasks would be restored"). Best-effort — broken DBs are
-        # still listable, they just report ``total: 0``.
-        counts: dict[str, int] = {}
-        db_path = child / "kanban.db"
-        if db_path.exists():
-            try:
-                conn = sqlite3.connect(str(db_path))
-                conn.row_factory = sqlite3.Row
-                try:
-                    rows = conn.execute(
-                        "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
-                    ).fetchall()
-                    counts = {r["status"]: int(r["n"]) for r in rows}
-                finally:
-                    conn.close()
-            except sqlite3.Error:
-                counts = {}
-        out.append({
-            "slug": base_slug,
-            "name": meta.get("name") or _default_board_display_name(base_slug),
-            "description": meta.get("description", ""),
-            "icon": meta.get("icon", ""),
-            "color": meta.get("color", ""),
-            "archived_dir": str(child),
-            "archived_at": archived_at,
-            "counts": counts,
-            "total": sum(counts.values()),
-        })
-    out.sort(key=lambda r: (r.get("archived_at") or 0), reverse=True)
-    return out
-
-
-def restore_board(slug: str) -> dict:
-    """Restore an archived board back to its active directory.
-
-    Why: Users need a one-click undo for accidental archives without
-    having to drop to a shell. Mirror of :func:`remove_board` archive
-    path — moves ``_archived/<slug>-<ts>/`` → ``boards/<slug>/``.
-    What: Locates the most-recently-archived directory matching ``slug``,
-    refuses if an active board with that slug already exists, otherwise
-    renames the directory back into place. Returns
-    ``{slug, action, new_path, archived_dir}``.
-    Test: Archive a board, call ``restore_board(slug)``, assert
-    :func:`board_exists` is True for the slug and the ``_archived`` dir
-    is gone.
-    """
-    normed = _normalize_board_slug(slug)
-    if not normed:
-        raise ValueError("board slug is required")
-    if board_exists(normed) and board_dir(normed).is_dir():
-        raise ValueError(
-            f"board {normed!r} already exists — cannot restore on top of an active board"
-        )
-    root = archived_boards_root()
-    if not root.is_dir():
-        raise ValueError(f"no archived board found for slug {normed!r}")
-    # Find the most-recently-archived dir for this slug (in case of
-    # multiple archives, restore the newest).
-    matches: list[tuple[int, Path]] = []
-    for child in root.iterdir():
-        if not child.is_dir():
-            continue
-        name = child.name
-        # Match "<slug>-<digits>" or "<slug>-<digits>-<n>" exactly.
-        # Avoid prefix-collisions (slug "foo" must not match dir "foobar-...").
-        if not name.startswith(normed + "-"):
-            continue
-        remainder = name[len(normed) + 1:]
-        # Remainder must be all digits or digits-then-"-<n>".
-        head_tail = remainder.split("-", 1)
-        if not head_tail[0].isdigit():
-            continue
-        try:
-            ts = int(head_tail[0])
-        except ValueError:
-            continue
-        matches.append((ts, child))
-    if not matches:
-        raise ValueError(f"no archived board found for slug {normed!r}")
-    matches.sort(key=lambda x: x[0], reverse=True)
-    archived_dir = matches[0][1]
-    target = board_dir(normed)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    archived_dir.rename(target)
-    # If the metadata file marked it archived, flip the flag so the UI
-    # doesn't show it as archived in the active list.
-    try:
-        meta_path = target / "board.json"
-        if meta_path.exists():
-            raw = json.loads(meta_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and raw.get("archived"):
-                raw["archived"] = False
-                meta_path.write_text(
-                    json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
-    except (OSError, json.JSONDecodeError):
-        pass
-    return {
-        "slug": normed,
-        "action": "restored",
-        "new_path": str(target),
-        "archived_dir": str(archived_dir),
-    }
-
-
-def hard_delete_board(slug: str) -> dict:
-    """Permanently delete a board directory (active OR archived).
-
-    Why: Operator wants to reclaim disk by purging a board that's no
-    longer needed even from the archive. Separate from :func:`remove_board`
-    so the integrity checks (zero tasks) can live in the API layer
-    without touching the legacy CLI path.
-    What: Removes the board's on-disk dir (preferring the active dir,
-    falling back to ``_archived/`` matches). Caller is responsible for
-    enforcing integrity rules. Returns ``{slug, action, removed_paths}``.
-    Test: Hard-delete a board, assert the dir is gone from both
-    ``boards/`` and ``boards/_archived/``.
-    """
-    import shutil
-
-    normed = _normalize_board_slug(slug)
-    if not normed:
-        raise ValueError("board slug is required")
-    if normed == DEFAULT_BOARD:
-        raise ValueError("the 'default' board cannot be removed")
-    removed: list[str] = []
-    active = board_dir(normed)
-    if active.is_dir():
-        if get_current_board() == normed:
-            clear_current_board()
-        shutil.rmtree(active)
-        removed.append(str(active))
-    # Also purge every matching archive entry so the slug fully vanishes.
-    root = archived_boards_root()
-    if root.is_dir():
-        for child in root.iterdir():
-            if not child.is_dir():
-                continue
-            name = child.name
-            if not name.startswith(normed + "-"):
-                continue
-            remainder = name[len(normed) + 1:]
-            head_tail = remainder.split("-", 1)
-            if not head_tail[0].isdigit():
-                continue
-            shutil.rmtree(child)
-            removed.append(str(child))
-    if not removed:
-        raise ValueError(f"board {normed!r} does not exist (not active, not archived)")
-    return {"slug": normed, "action": "hard-deleted", "removed_paths": removed}
-
-
-def restore_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Flip an archived task back to an active state.
-
-    Why: Users archive tasks aggressively as part of triage; they need a
-    one-click undo without resorting to raw SQL or the CLI.
-    What: Sets status='todo' (a safe default — task gets re-evaluated by
-    ``recompute_ready`` afterwards so parent-blocked tasks stay correct).
-    Records a ``restored`` event in ``task_events``. Returns False if the
-    task isn't archived.
-    Test: Archive a task, call ``restore_task``, assert it returns True
-    and the task's status is now 'todo'.
-    """
-    with write_txn(conn):
-        row = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        if row["status"] != "archived":
-            return False
-        # Flip to 'todo' as the safe default. ``recompute_ready`` will
-        # promote to 'ready' if no upstream blockers remain.
-        cur = conn.execute(
-            "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'archived'",
-            (task_id,),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(conn, task_id, "restored", None, run_id=None)
-    # Outside the txn — recompute might mark it ready.
-    try:
-        recompute_ready(conn)
-    except Exception:
-        pass
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1147,20 +832,6 @@ class Comment:
 
 
 @dataclass
-class Attachment:
-    """In-memory view of a row from the ``task_attachments`` table."""
-
-    id: int
-    task_id: str
-    filename: str
-    stored_path: str
-    content_type: Optional[str]
-    size: int
-    uploaded_by: Optional[str]
-    created_at: int
-
-
-@dataclass
 class Event:
     id: int
     task_id: str
@@ -1286,23 +957,6 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error               TEXT
 );
 
--- Files attached to a task (PDFs, images, source documents). The blob
--- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
--- this row carries metadata + the absolute ``stored_path`` so the
--- dashboard can list/download and ``build_worker_context`` can surface
--- the absolute path to the worker (which has full file-tool access). See
--- #35338.
-CREATE TABLE IF NOT EXISTS task_attachments (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id      TEXT NOT NULL,
-    filename     TEXT NOT NULL,
-    stored_path  TEXT NOT NULL,
-    content_type TEXT,
-    size         INTEGER NOT NULL DEFAULT 0,
-    uploaded_by  TEXT,
-    created_at   INTEGER NOT NULL
-);
-
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
 -- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
@@ -1327,7 +981,6 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
-CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
 
@@ -1633,21 +1286,6 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    # Don't auto-resurrect a deleted board. After hard_delete_board() the
-    # board dir is gone — but stale callers (frontend with old `?board=`
-    # query, dispatcher tick with cached state, `current` pointer that
-    # wasn't cleared) would mkdir(exist_ok=True) + init schema and the
-    # board reappears. Default board is exempt — its path is the legacy
-    # root-level kanban.db, always valid.
-    if (
-        board
-        and board != DEFAULT_BOARD
-        and not path.exists()
-        and not path.parent.exists()
-    ):
-        raise FileNotFoundError(
-            f"board {board!r} does not exist on disk (deleted?)"
-        )
     path.parent.mkdir(parents=True, exist_ok=True)
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
@@ -2746,121 +2384,6 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
         )
         for r in rows
     ]
-
-
-# ---------------------------------------------------------------------------
-# Attachments
-# ---------------------------------------------------------------------------
-
-def add_attachment(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    filename: str,
-    stored_path: str,
-    content_type: Optional[str] = None,
-    size: int = 0,
-    uploaded_by: Optional[str] = None,
-) -> int:
-    """Record a file attachment for a task. Returns the new attachment id.
-
-    The caller is responsible for writing the blob to ``stored_path``
-    first (under :func:`task_attachments_dir`); this only persists the
-    metadata row and appends an ``attached`` event.
-    """
-    if not filename or not filename.strip():
-        raise ValueError("attachment filename is required")
-    if not stored_path or not stored_path.strip():
-        raise ValueError("attachment stored_path is required")
-    now = int(time.time())
-    with write_txn(conn):
-        if not conn.execute(
-            "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
-        ).fetchone():
-            raise ValueError(f"unknown task {task_id}")
-        cur = conn.execute(
-            "INSERT INTO task_attachments "
-            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                task_id,
-                filename.strip(),
-                stored_path,
-                content_type,
-                int(size),
-                uploaded_by,
-                now,
-            ),
-        )
-        _append_event(
-            conn,
-            task_id,
-            "attached",
-            {"filename": filename.strip(), "size": int(size), "by": uploaded_by},
-        )
-        return int(cur.lastrowid or 0)
-
-
-def list_attachments(conn: sqlite3.Connection, task_id: str) -> list[Attachment]:
-    rows = conn.execute(
-        "SELECT * FROM task_attachments WHERE task_id = ? ORDER BY created_at ASC, id ASC",
-        (task_id,),
-    ).fetchall()
-    return [
-        Attachment(
-            id=r["id"],
-            task_id=r["task_id"],
-            filename=r["filename"],
-            stored_path=r["stored_path"],
-            content_type=r["content_type"],
-            size=r["size"] or 0,
-            uploaded_by=r["uploaded_by"],
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
-
-
-def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
-    r = conn.execute(
-        "SELECT * FROM task_attachments WHERE id = ?", (attachment_id,)
-    ).fetchone()
-    if r is None:
-        return None
-    return Attachment(
-        id=r["id"],
-        task_id=r["task_id"],
-        filename=r["filename"],
-        stored_path=r["stored_path"],
-        content_type=r["content_type"],
-        size=r["size"] or 0,
-        uploaded_by=r["uploaded_by"],
-        created_at=r["created_at"],
-    )
-
-
-def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
-    """Delete an attachment row and its on-disk blob. Returns the removed row.
-
-    Returns ``None`` when no row matched. The blob is removed best-effort
-    (a missing file is not an error); the metadata row is the source of
-    truth for whether an attachment "exists".
-    """
-    with write_txn(conn):
-        att = get_attachment(conn, attachment_id)
-        if att is None:
-            return None
-        conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
-        _append_event(
-            conn, att.task_id, "attachment_removed", {"filename": att.filename}
-        )
-    try:
-        p = Path(att.stored_path)
-        if p.is_file():
-            p.unlink()
-    except OSError:
-        pass
-    return att
 
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
@@ -4806,13 +4329,6 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
-
-    GitHub mirror: when the operator has configured a GitHub App
-    (env: GITHUB_APP_ID/INSTALLATION_ID/PRIVATE_KEY_PATH), every board's
-    ``workspaces/`` root is also a git repo pushed to GitHub. The init +
-    initial push happens lazily on the first call here per board, then
-    each ``kanban_complete`` triggers a commit+push. Failures are
-    logged and never raise — the plain-dir behaviour is preserved.
     """
     kind = task.workspace_kind or "scratch"
     if kind == "scratch":
@@ -4829,7 +4345,6 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         else:
             p = workspaces_root(board=board) / task.id
         p.mkdir(parents=True, exist_ok=True)
-        _maybe_init_github_mirror(board=board)
         return p
     if kind == "dir":
         if not task.workspace_path:
@@ -4844,7 +4359,6 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
         p.mkdir(parents=True, exist_ok=True)
-        _maybe_init_github_mirror(board=board)
         return p
     if kind == "worktree":
         if not task.workspace_path:
@@ -4858,98 +4372,6 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             )
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
-
-
-_github_mirror_initialised: set[str] = set()
-
-
-def _maybe_init_github_mirror(*, board: Optional[str]) -> None:
-    """Per-process one-shot: init the board's ``workspaces/`` as a GitHub repo
-    AND its matching Hindsight bank + project-overview mental-model.
-
-    Why a module-level cache: a single dispatcher process resolves dozens of
-    workspaces per board over its lifetime. Calling ``ensure_remote_repo``
-    every time would burn API quota and slow each resolve down by ~1s.
-    The first successful init is cached by board slug; subsequent calls
-    short-circuit.
-
-    Failures don't poison the cache — next call retries (lets transient
-    network errors heal on their own).
-
-    Hindsight side (added 2026-05-23): on the same code path we ALSO
-    create the per-board memory bank ``hermes-board-<slug>`` plus a
-    ``project-overview`` mental-model inside it. The two stores cover
-    different slices to avoid drift:
-      * git mirror  → WHAT was done (commits, files)
-      * hindsight   → WHY / goals / rejected alternatives / prohibitions
-                       (project-overview source_query enforces this split)
-    Hindsight failure is logged but does NOT block git/workspace setup —
-    project memory is best-effort, project artefacts are not.
-    """
-    slug = _normalize_board_slug(board) or get_current_board()
-    if slug in _github_mirror_initialised:
-        return
-
-    git_ok = False
-    try:
-        from tools.github_app_workspace import init_workspace_repo, is_configured
-        if is_configured():
-            repo_root = workspaces_root(board=slug)
-            git_ok = init_workspace_repo(repo_root, slug)
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "_maybe_init_github_mirror: github init for board %s raised: %s",
-            slug, exc,
-        )
-
-    # Hindsight side — best-effort; never raises by contract.
-    #
-    # KNOWN GAP (2026-05-23):
-    # This creates the bank `hermes-board-<slug>` and a project-overview
-    # mental-model inside it — but worker profiles do NOT yet write
-    # observations INTO this bank. Current bank routing for retain is
-    # driven by `bank_id_template` in ~/.hermes/hindsight/config.json
-    # (set to `hermes-{profile}` today), which has no {board}
-    # placeholder. So today the workers write to `hermes-research-agent`,
-    # `hermes-coder` etc., while the project-overview model sits in
-    # `hermes-board-<slug>` and consolidates from observations that bank
-    # has — which is initially zero.
-    #
-    # Two ways to close the gap (operator decision pending):
-    #   (a) Add a {board} placeholder + resolver in
-    #       tools/hindsight_provider/_resolve_bank_id_template so workers
-    #       on a board write directly into the board-bank. Cleanest, but
-    #       requires per-profile bank_id_template overrides for non-board
-    #       cases. Cost: ~20-line resolver change + per-board bank
-    #       proliferation (one bank per chief).
-    #   (b) Keep per-profile banks, add an explicit `board:<slug>` retain
-    #       tag (already in the model's tags), then have recall pull
-    #       from BOTH per-profile bank AND the board-bank's overview
-    #       model via tag-filter. Cost: tag-driven cross-bank recall
-    #       isn't supported by hindsight-client today — would need a
-    #       wrapper that does two calls and merges.
-    #
-    # Until either is in place, the board-bank's project-overview model
-    # is a stub: cron consolidate will refresh it but the bank has no
-    # source observations, so the model's content will say "—" for
-    # every section. That's by design for the v1 hook — bank+model
-    # exist physically, ready for routing to be wired up. See
-    # infra/hermes/docs/hindsight-memory-guide.md §5 for the bank/
-    # mental-model architecture.
-    try:
-        from tools.hindsight_board_setup import init_board_hindsight
-        init_board_hindsight(slug)
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "_maybe_init_github_mirror: hindsight init for board %s raised: %s",
-            slug, exc,
-        )
-
-    # Cache only if the git mirror succeeded — that's the heavyweight
-    # operation we want to avoid repeating. Hindsight init is cheap
-    # enough that re-trying on next call is fine.
-    if git_ok:
-        _github_mirror_initialised.add(slug)
 
 
 def set_workspace_path(
@@ -6839,25 +6261,6 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    # operator_chat_id propagation for chief workers — read from board
-    # metadata (chief_spawn writes it there). Lets tg_send / tg_ask
-    # resolve their delivery target without the worker having to walk
-    # the board json itself. Best-effort: missing metadata is fine for
-    # non-chief workers and for chief workers spawned without an
-    # operator (they'll just get a clear error from tg_send).
-    try:
-        chief_meta = read_board_metadata(resolved_board)
-    except Exception:
-        chief_meta = None
-    if isinstance(chief_meta, dict):
-        cid = chief_meta.get("operator_chat_id")
-        if cid not in (None, ""):
-            env["HERMES_OPERATOR_CHAT_ID"] = str(cid)
-    # HITL bridge URL — default points at the docker-compose hostname;
-    # operators on different topologies can override via the parent env.
-    if "HERMES_HITL_BRIDGE_URL" not in env:
-        env["HERMES_HITL_BRIDGE_URL"] = "http://hermes-hitl:8889"
-
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -7060,25 +6463,6 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
-        lines.append("")
-
-    # Attachments — files uploaded to this task (PDFs, source docs,
-    # images). Surface the absolute on-disk path so the worker, which has
-    # full file-tool access, can read them directly (read_file, terminal
-    # `pdftotext`, etc.). On the local terminal backend the path resolves
-    # as-is; remote backends need the kanban attachments dir mounted.
-    attachments = list_attachments(conn, task_id)
-    if attachments:
-        lines.append("## Attachments")
-        lines.append(
-            "Files attached to this task. Read them with the file/terminal "
-            "tools at the absolute paths below:"
-        )
-        for att in attachments:
-            size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
-            size_str = f", {size_kb} KB" if size_kb else ""
-            ctype = f", {att.content_type}" if att.content_type else ""
-            lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
         lines.append("")
 
     # Prior attempts — show closed runs so a retrying worker sees the

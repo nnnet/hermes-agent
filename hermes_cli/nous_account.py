@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -16,7 +15,6 @@ NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "
 
 _ACCOUNT_INFO_CACHE_TTL = 60
 _account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
-_ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -304,11 +302,10 @@ def _fresh_account_info(
         portal_base_url = _portal_base_url(refreshed_state) or portal_base_url
         cache_key = _cache_key(access_token, portal_base_url)
 
-        with _ACCOUNT_INFO_CACHE_LOCK:
-            if not force_fresh and _account_info_cache is not None:
-                cached_key, cached_at, cached_info = _account_info_cache
-                if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
-                    return cached_info
+        if not force_fresh and _account_info_cache is not None:
+            cached_key, cached_at, cached_info = _account_info_cache
+            if cached_key == cache_key and (time.monotonic() - cached_at) < _ACCOUNT_INFO_CACHE_TTL:
+                return cached_info
 
         payload = _fetch_nous_account_info(access_token, portal_base_url)
         if not payload:
@@ -330,8 +327,7 @@ def _fresh_account_info(
             state=refreshed_state,
             portal_base_url=portal_base_url,
         )
-        with _ACCOUNT_INFO_CACHE_LOCK:
-            _account_info_cache = (cache_key, time.monotonic(), info)
+        _account_info_cache = (cache_key, time.monotonic(), info)
         return info
     except Exception as exc:
         return _error_info(
