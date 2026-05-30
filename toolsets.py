@@ -76,10 +76,6 @@ _HERMES_CORE_TOOLS = [
     "chief_status",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
-    # GitHub repo ops (gated on credentials available via check_fn — App
-    # installation OR GITHUB_TOKEN/GH_TOKEN). Encapsulates auth so the agent
-    # never hand-rolls JWT minting through execute_code.
-    "github_repo_list", "github_repo_view", "github_repo_delete", "github_repo_create",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
