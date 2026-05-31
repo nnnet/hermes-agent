@@ -1,0 +1,22 @@
+web/src/themes/context.tsx
+  s_e5369d415d379b::t_305f4787221646 307-313,316-320,335-340,343-349
+hermes_cli/web_server.py
+  s_e5369d415d379b::t_9c3521770aa5d1 3830-3856,3859-3861,3864-3865,3867-3877,3879
+  s_e5369d415d379b::t_77dd21cfe64c3f 3949-3959
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "31cb6183171f5ae9ec869ab2dff9c3e030b7590a",
+  "prompts": {},
+  "sessions": {
+    "s_e5369d415d379b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b040558-739b-4a21-810b-53eec3b51a99",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "nnnet <zkowkmdx@sharklasers.com>"
+    }
+  }
+}
