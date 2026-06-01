@@ -35,6 +35,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
+    PLUGIN_TRUSTED_BLOCKS_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     TASK_COMPLETION_GUIDANCE,
@@ -100,6 +101,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    # Whitelist trusted plugin fences so the LLM does not flag
+    # pre_llm_call-injected blocks as prompt injection. Universal —
+    # any model needs this to follow workflow-engine outputs.
+    stable_parts.append(PLUGIN_TRUSTED_BLOCKS_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
