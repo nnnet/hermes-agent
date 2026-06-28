@@ -8,12 +8,14 @@ name: sync-main
 # is no conflict: `main` stays a clean upstream mirror, `prod` just carries this
 # one workflow.
 #
-# It uses `gh repo sync` (the server-side merge-upstream API), NOT `git push`.
-# That matters: a plain `git push` from the default GITHUB_TOKEN is rejected
-# whenever the push touches `.github/workflows/*` (upstream's own CI files) —
-# "refusing to allow a GitHub App to ... workflow without workflows permission".
-# The merge-upstream API performs the sync server-side and is not subject to
-# that restriction, so the sync completes cleanly every run.
+# Requires a repo secret FORK_SYNC_TOKEN: a PAT with the `workflow` scope
+# (classic: scopes `repo` + `workflow`; or fine-grained on nnnet/hermes-agent
+# with Contents: write AND Workflows: write). This is NOT optional: upstream's
+# commits routinely change files under `.github/workflows/`, and GitHub refuses
+# to let ANY token sync those without the `workflow` scope — the default
+# GITHUB_TOKEN cannot have it, so both `git push` and `gh repo sync` fail with
+# "Upstream commits contain workflow changes, which require the workflow scope".
+# A PAT with that scope is the only way to mirror this particular upstream.
 
 on:
   schedule:
@@ -33,7 +35,7 @@ jobs:
     steps:
       - name: Sync fork main from upstream
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
         run: |
           set -euo pipefail
           gh repo sync nnnet/hermes-agent \
