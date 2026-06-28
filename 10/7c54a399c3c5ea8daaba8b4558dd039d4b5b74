@@ -1,0 +1,20 @@
+.github/workflows/sync-main.yml
+  s_28e925fb55cbb1::t_a03e144d4df0f8 38
+  s_28e925fb55cbb1::t_d707b4549c9145 11-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "107c54a399c3c5ea8daaba8b4558dd039d4b5b74",
+  "prompts": {},
+  "sessions": {
+    "s_28e925fb55cbb1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "afe1c6d3-ab91-487e-b007-7fe92db051a2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "nnnet <21066097+nnnet@users.noreply.github.com>"
+    }
+  }
+}
