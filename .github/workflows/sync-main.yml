@@ -1,0 +1,42 @@
+name: sync-main
+
+# Keep this fork's `main` an up-to-date mirror of upstream
+# (NousResearch/hermes-agent) — entirely on GitHub, no external host.
+#
+# This workflow lives on `prod` (the fork's default branch) so GitHub arms its
+# schedule. It ONLY syncs the `main` branch and never touches `prod`, so there
+# is no conflict: `main` stays a clean upstream mirror, `prod` just carries this
+# one workflow.
+#
+# It uses `gh repo sync` (the server-side merge-upstream API), NOT `git push`.
+# That matters: a plain `git push` from the default GITHUB_TOKEN is rejected
+# whenever the push touches `.github/workflows/*` (upstream's own CI files) —
+# "refusing to allow a GitHub App to ... workflow without workflows permission".
+# The merge-upstream API performs the sync server-side and is not subject to
+# that restriction, so the sync completes cleanly every run.
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly at :17
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync fork main from upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh repo sync nnnet/hermes-agent \
+            --source NousResearch/hermes-agent \
+            --branch main
+          echo "fork main synced to upstream/main"
