@@ -1,26 +1,111 @@
 ---
 name: github-auth
-description: "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login."
-version: 1.1.0
+description: "GitHub auth setup: gh-app wrapper (GitHub App installation token), HTTPS tokens, SSH keys, gh CLI login."
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [GitHub, Authentication, Git, gh-cli, SSH, Setup]
+    tags: [GitHub, Authentication, Git, gh-cli, SSH, Setup, gh-app, GitHub-App]
     related_skills: [github-pr-workflow, github-code-review, github-issues, github-repo-management]
 ---
 
 # GitHub Authentication Setup
 
-This skill sets up authentication so the agent can work with GitHub repositories, PRs, issues, and CI. It covers two paths:
+This skill sets up authentication so the agent can work with GitHub repositories, PRs, issues, and CI. It covers three paths in priority order:
 
-- **`git` (always available)** — uses HTTPS personal access tokens or SSH keys
+- **`gh-app` wrapper (if deployed)** — pre-configured GitHub App installation token. Operator side already wired all credentials, agent needs zero input from the user. **Try this first.**
 - **`gh` CLI (if installed)** — richer GitHub API access with a simpler auth flow
+- **`git` (always available)** — uses HTTPS personal access tokens or SSH keys
 
-## Detection Flow
+---
 
-When a user asks you to work with GitHub, run this check first:
+## Method 0: `gh-app` (PREFERRED when available — zero credential input)
+
+**STOP. Before writing any GitHub script or asking the user for credentials — check
+if `gh-app` exists on `PATH`. If yes, use it.**
+
+```bash
+command -v gh-app && gh-app --version 2>/dev/null  # detect
+```
+
+When deployed (e.g. inside the Hermes container) `gh-app` is a thin wrapper that:
+
+1. Reads GitHub App credentials from env (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`,
+   `GITHUB_APP_PRIVATE_KEY_PATH` — operator-managed, **already populated**).
+2. Mints a fresh installation token via JWT exchange (1-hour TTL, cached 50min).
+3. Exports `GH_TOKEN` and exec's the regular `gh` CLI.
+
+The wrapper requires **zero input from the user** — no App ID prompt, no PAT, no
+`gh auth login`. If you ever find yourself asking the operator for `GITHUB_APP_ID`
+or any other GitHub credential while `gh-app` is on `PATH`, you have made a
+mistake — back up and use `gh-app`.
+
+### Scope
+
+`gh-app` is scoped to the App's installation org. Discover what's in scope:
+
+```bash
+gh-app api /installation/repositories --jq '.repositories[].full_name'
+```
+
+It **cannot** touch repos outside the installation (e.g. the operator's personal
+repos). For those, fall back to plain `gh` (Method 1) — the operator has their
+own auth on the host.
+
+### Usage — common operations
+
+```bash
+# Inspect what the App can see
+gh-app repo list <org> --limit 100
+gh-app api /installation/repositories | jq '.total_count'
+
+# Read / write a repo
+gh-app repo view   <org>/<repo>
+gh-app repo clone  <org>/<repo>          # clone via installation token (transparent)
+gh-app issue list  --repo <org>/<repo>
+gh-app pr create   --repo <org>/<repo> --title "..." --body "..."
+
+# Delete (App needs Administration: write — same permission used to create)
+gh-app repo delete <org>/<repo> --yes
+
+# Direct API for endpoints `gh` doesn't expose
+gh-app api -X DELETE /repos/<org>/<repo>
+```
+
+### Bulk operations pattern
+
+Token is cached, so loops don't hammer the JWT endpoint:
+
+```bash
+for r in $(gh-app repo list <org> --limit 100 --json name --jq '.[].name' \
+           | grep '^TEST-'); do
+  echo "deleting <org>/$r"
+  gh-app repo delete "<org>/$r" --yes
+done
+```
+
+### Debugging when `gh-app` errors
+
+- **403 on `gh-app api user`:** Expected — installation tokens can't impersonate
+  a user. Use `/installation/repositories` instead.
+- **404 on a repo you "know" exists:** Repo is outside the App's installation
+  scope. Verify with `gh-app api /installation/repositories`.
+- **`GITHUB_APP_ID not set`:** Operator-side wiring is broken. Check container env
+  with `env | grep GITHUB_APP`. Do NOT ask the user to supply the ID — surface the
+  env-wiring gap to the operator instead.
+
+If `gh-app` errors and you genuinely need a different auth scope, **then** fall
+back to Method 1/2 below — but state clearly to the operator what scope `gh-app`
+lacks before asking for credentials.
+
+---
+
+## Detection Flow (when `gh-app` doesn't fit)
+
+When a user asks you to work with GitHub on a repo OUTSIDE the App's installation
+scope, run this:
 
 ```bash
 # Check what's available
@@ -33,9 +118,10 @@ git config --global credential.helper 2>/dev/null || echo "no git credential hel
 ```
 
 **Decision tree:**
-1. If `gh auth status` shows authenticated → you're good, use `gh` for everything
-2. If `gh` is installed but not authenticated → use "gh auth" method below
-3. If `gh` is not installed → use "git-only" method below (no sudo needed)
+1. If `gh-app` is on `PATH` AND target repo is in its installation scope → use Method 0
+2. If `gh auth status` shows authenticated → use `gh` for everything
+3. If `gh` is installed but not authenticated → use "gh auth" method below
+4. If `gh` is not installed → use "git-only" method below (no sudo needed)
 
 ---
 

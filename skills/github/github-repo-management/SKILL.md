@@ -15,6 +15,32 @@ metadata:
 
 Create, clone, fork, configure, and manage GitHub repositories. Each section shows `gh` first, then the `git` + `curl` fallback.
 
+## Working with App-scoped repos — use `gh-app`, not raw `gh`
+
+When the `gh-app` wrapper is on `PATH`, it's the preferred tool for any repo under
+the App's installation scope: list, view, create, delete, clone, set topics, etc.
+The wrapper is pre-configured by the operator (App ID + installation ID + private
+key already in env) — no APP_ID prompt, no PAT, no `gh auth login` needed.
+
+```bash
+# Detect
+command -v gh-app && gh-app api /installation/repositories --jq '.repositories[].full_name'
+
+# Common operations
+gh-app repo list   <org> --limit 100
+gh-app repo view   <org>/<repo>
+gh-app repo delete <org>/<repo> --yes
+gh-app api -X DELETE /repos/<org>/<repo>   # equivalent
+```
+
+The App has `Administration: write` on its installation (same permission used when
+creating the repo), so delete works symmetrically with create. Full details and
+bulk-delete recipe in `github-auth` SKILL.md Method 0.
+
+**Hard rule:** if you're about to ask the operator for `GITHUB_APP_ID`, `GITHUB_TOKEN`,
+or any credential while `gh-app` is on PATH — stop and run `gh-app` instead. The
+creds are already wired.
+
 ## Prerequisites
 
 - Authenticated with GitHub (see `github-auth` skill)
